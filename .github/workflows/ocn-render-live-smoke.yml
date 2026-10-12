@@ -1,0 +1,21 @@
+name: Live Render MCP end-to-end smoke
+on:
+  push:
+    branches:
+      - feature/render-mcp-ping-canary-20261012
+    paths:
+      - "canary/mcp/tests/render-live-smoke.test.mjs"
+      - ".github/workflows/ocn-render-live-smoke.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  live-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test production HTTPS ping-only canary
+        run: |
+          node --check canary/mcp/tests/render-live-smoke.test.mjs
+          node --test canary/mcp/tests/render-live-smoke.test.mjs
