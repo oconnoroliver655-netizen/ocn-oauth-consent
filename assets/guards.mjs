@@ -11,7 +11,7 @@ export function isConfigured(config) {
       !/^sb_publishable_[a-zA-Z0-9_-]{10,}$/.test(config.publishableKey)) return false;
   if (typeof config.ownerUserId !== "string" || !UUID.test(config.ownerUserId)) return false;
   if (typeof config.approvedOAuthClientId !== "string" ||
-      !/^[a-zA-Z0-9_.:-]{8,200}$/.test(config.approvedOAuthClientId)) return false;
+      !UUID.test(config.approvedOAuthClientId)) return false;
   try {
     const u = new URL(config.approvedRedirectUri);
     return u.protocol === "https:" && !u.username && !u.password && !u.search &&

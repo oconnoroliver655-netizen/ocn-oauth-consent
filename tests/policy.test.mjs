@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { CONFIG } from "../assets/config.mjs";
 import {
   isConfigured, getAuthorizationId, matchingCallback, isOwner,
   authorizeDetails, returnToConsent
@@ -11,7 +12,7 @@ const C = {
   supabaseUrl: "https://ouxniljtjxnrkwakkvbv.supabase.co",
   publishableKey: "sb_publishable_testingExample123",
   ownerUserId: "11111111-2222-4333-8444-555555555555",
-  approvedOAuthClientId: "registered-test-app",
+  approvedOAuthClientId: "66666666-7777-4888-8999-aaaaaaaaaaaa",
   approvedRedirectUri: "https://chatgpt.com/connector/oauth/callback"
 };
 const DETAILS = {
@@ -29,6 +30,10 @@ test("site is disabled until all exact owner-controlled settings exist", () => {
   assert.equal(isConfigured({...C,supabaseUrl:"https://attacker.supabase.co"}),false);
   assert.equal(isConfigured({...C,publishableKey:"sb_secret_danger"}),false);
   assert.equal(isConfigured({...C,approvedRedirectUri:"http://localhost:1234"}),false);
+  assert.equal(isConfigured({...C,approvedOAuthClientId:"PENDING_APPROVED_CLIENT_ID"}),false);
+  assert.equal(isConfigured({...C,approvedOAuthClientId:"registered-test-app"}),false);
+  assert.equal(isConfigured({...C,approvedOAuthClientId:"66666666-7777-4888-8999-aaaaaaaaaaab"}),true);
+  assert.equal(isConfigured({...C,approvedOAuthClientId:"00000000-0000-0000-0000-000000000000"}),false);
 });
 
 test("authorization_id must be singular, opaque and isolated from untrusted parameters", () => {
@@ -80,12 +85,15 @@ test("consent URL survives passwordless email sign-in without leaking fragments"
   assert.throws(()=>returnToConsent("https://example.com/","bad"));
 });
 
-test("public config pins only verified owner UUID and leaves OAuth client disabled", () => {
+test("public config pins confirmed OAuth client UUID and exact registered callback", () => {
+  assert.equal(isConfigured(CONFIG), true);
+  assert.equal(isOwner({id:CONFIG.ownerUserId},CONFIG), true);
   const conf=readFileSync(new URL("../assets/config.mjs",import.meta.url),"utf8");
   assert.match(conf,/ownerUserId:\s*"[0-9a-f-]{36}"/i);
   assert.doesNotMatch(conf,/PENDING_VERIFIED_OWNER_UUID/);
-  assert.match(conf,/PENDING_APPROVED_CLIENT_ID/);
-  assert.match(conf,/PENDING_REGISTERED_CALLBACK_HTTPS_URL/);
+  assert.match(conf,/approvedOAuthClientId:\s*"b5127c11-1860-47da-a550-7a86c3008e8b"/);
+  assert.match(conf,/approvedRedirectUri:\s*"https:\/\/chatgpt\.com\/connector\/oauth\/njDtljL6RcUX"/);
+  assert.doesNotMatch(conf,/PENDING_APPROVED_CLIENT_ID|PENDING_REGISTERED_CALLBACK_HTTPS_URL/);
   assert.doesNotMatch(conf,/sb_secret_|service_role|sk_[A-Za-z0-9]{16,}/);
 });
 
