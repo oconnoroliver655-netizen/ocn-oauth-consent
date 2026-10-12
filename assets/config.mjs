@@ -5,5 +5,5 @@ export const CONFIG = Object.freeze({
   publishableKey: "sb_publishable_cnkPnBYz1AezGEqp2ZM3tg_nvwOloS5",
   ownerUserId: "12509085-8869-4258-83f6-3afd6c53cec3",
   approvedOAuthClientId: "PENDING_APPROVED_CLIENT_ID",
-  approvedRedirectUri: "PENDING_REGISTERED_CALLBACK_HTTPS_URL"
+  approvedRedirectUri: "https://chatgpt.com/connector/oauth/njDtljL6RcUX"
 });
