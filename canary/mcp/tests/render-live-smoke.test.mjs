@@ -47,6 +47,8 @@ test("tool discovery shows ONLY the unprivileged ping + denied probe",{timeout:5
   const result=await rpc("tools/list");
   assert.equal(result.status,200);
   assert.deepEqual(result.body.result.tools.map(t=>t.name),["ping"]);
+  assert.deepEqual(result.body.result.tools[0].securitySchemes,[{type:"noauth"}]);
+  assert.equal(result.body.result.tools[0].annotations.readOnlyHint,true);
   assert.ok(result.body.result.tools.every(t=>t.annotations.destructiveHint===false));
 });
 
