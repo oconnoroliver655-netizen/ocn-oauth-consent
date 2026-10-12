@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { CONFIG } from "../assets/config.mjs";
 import {
   isConfigured, getAuthorizationId, matchingCallback, isOwner,
   authorizeDetails, returnToConsent
@@ -11,7 +12,7 @@ const C = {
   supabaseUrl: "https://ouxniljtjxnrkwakkvbv.supabase.co",
   publishableKey: "sb_publishable_testingExample123",
   ownerUserId: "11111111-2222-4333-8444-555555555555",
-  approvedOAuthClientId: "registered-test-app",
+  approvedOAuthClientId: "22222222-3333-4333-8333-555555555555",
   approvedRedirectUri: "https://chatgpt.com/connector/oauth/callback"
 };
 const DETAILS = {
@@ -23,6 +24,7 @@ const DETAILS = {
 
 test("site is disabled until all exact owner-controlled settings exist", () => {
   assert.equal(isConfigured(C), true);
+  assert.equal(isConfigured({...C, approvedOAuthClientId:"registered-test-app"}), false);
   for (const field of ["publishableKey","ownerUserId","approvedOAuthClientId","approvedRedirectUri"]) {
     assert.equal(isConfigured({...C,[field]:"PENDING"}),false, field);
   }
@@ -85,7 +87,9 @@ test("public config pins only verified owner UUID and leaves OAuth client disabl
   assert.match(conf,/ownerUserId:\s*"[0-9a-f-]{36}"/i);
   assert.doesNotMatch(conf,/PENDING_VERIFIED_OWNER_UUID/);
   assert.match(conf,/PENDING_APPROVED_CLIENT_ID/);
-  assert.match(conf,/PENDING_REGISTERED_CALLBACK_HTTPS_URL/);
+  assert.equal(CONFIG.approvedOAuthClientId, "PENDING_APPROVED_CLIENT_ID");
+  assert.equal(isConfigured(CONFIG), false, "Public consent must remain disabled until authenticated gateway deployment");
+  assert.match(conf,/approvedRedirectUri:\\s*"https:\\/\\/chatgpt\\.com\\/connector\\/oauth\\/njDtljL6RcUX"/);
   assert.doesNotMatch(conf,/sb_secret_|service_role|sk_[A-Za-z0-9]{16,}/);
 });
 
