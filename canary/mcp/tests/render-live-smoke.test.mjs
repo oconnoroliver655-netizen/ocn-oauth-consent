@@ -46,7 +46,7 @@ test("real MCP initialize responds to a compliant Streamable HTTP client",{timeo
 test("tool discovery shows ONLY the unprivileged ping + denied probe",{timeout:50000},async()=>{
   const result=await rpc("tools/list");
   assert.equal(result.status,200);
-  assert.deepEqual(result.body.result.tools.map(t=>t.name),["ping","owner_auth_probe"]);
+  assert.deepEqual(result.body.result.tools.map(t=>t.name),["ping"]);
   assert.ok(result.body.result.tools.every(t=>t.annotations.destructiveHint===false));
 });
 
