@@ -1,0 +1,31 @@
+name: Validate public OAuth consent
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  security-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax and isolated authorization policy tests
+        run: |
+          node --check assets/config.mjs
+          node --check assets/guards.mjs
+          node --check assets/consent.mjs
+          node --test tests/policy.test.mjs
+      - name: Verify public static site and secret patterns
+        run: |
+          test -f index.html
+          test -f oauth/consent/index.html
+          test -f assets/consent.mjs
+          test -f assets/guards.mjs
+          if grep -REn '(sb_secret_|service.role|runtime.api.key|ghp_[A-Za-z0-9]{20})' assets/ oauth/; then
+            echo "Forbidden secret-like pattern in public deployable assets"
+            exit 1
+          fi
