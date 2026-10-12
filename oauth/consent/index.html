@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://esm.sh; connect-src https://ouxniljtjxnrkwakkvbv.supabase.co https://esm.sh; style-src 'self'; img-src 'none'; base-uri 'none'; object-src 'none'; form-action 'self'; upgrade-insecure-requests">
+  <title>OCN — Review OAuth authorization</title>
+  <link rel="stylesheet" href="../../assets/site.css">
+</head>
+<body>
+<main>
+  <h1>Oliver Commander Next</h1>
+  <p class="muted">Review an OAuth authorization request. This page cannot grant Windows administration or arbitrary command execution.</p>
+  <section class="panel">
+    <p id="status" role="status" aria-live="polite">Validating request…</p>
+    <form id="signin" hidden>
+      <h2>Sign in with your registered email</h2>
+      <label for="email">Email address</label>
+      <input id="email" type="email" autocomplete="email" maxlength="254" required>
+      <button type="submit" id="send">Send sign-in email</button>
+      <p class="hint">Sign-in is limited to an existing owner account; this page cannot create a new account.</p>
+    </form>
+    <section id="review" hidden>
+      <h2>Application requesting identity access</h2>
+      <dl>
+        <dt>App</dt><dd id="app-name"></dd>
+        <dt>OAuth client ID</dt><dd id="app-id"></dd>
+        <dt>Registered callback</dt><dd id="callback"></dd>
+        <dt>Requested identity scopes</dt><dd id="scopes"></dd>
+      </dl>
+      <p class="notice">Approving shares identity data with this client. It does NOT grant Windows administrator, file, mouse, keyboard, or terminal permissions.</p>
+      <label class="confirm"><input id="checked" type="checkbox"> I recognize this client and approve this sign-in.</label>
+      <div class="buttons">
+        <button id="approve" type="button" disabled>Allow sign-in</button>
+        <button id="deny" type="button" class="quiet">Deny</button>
+      </div>
+    </section>
+    <section id="previous" hidden>
+      <p>Supabase reports this request has already been approved. Confirm before continuing to its registered callback.</p>
+      <button id="continue" type="button">Continue to approved callback</button>
+    </section>
+  </section>
+  <p class="hint">Never enter Windows passwords, Runtime API keys, or service-role credentials on this website.</p>
+</main>
+<script type="module" src="../../assets/consent.mjs"></script>
+</body>
+</html>
