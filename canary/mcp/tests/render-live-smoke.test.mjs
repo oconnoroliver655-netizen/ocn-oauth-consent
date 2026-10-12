@@ -82,6 +82,7 @@ test("separate OAuth test path advertises protected tool and always challenges",
     assert.equal(data.result.isError,true);
     assert.match(data.result._meta["mcp/www_authenticate"][0],/oauth-protected-resource/);
     assert.match(data.result._meta["mcp/www_authenticate"][0],/error="invalid_token"/);
+    assert.match(data.result._meta["mcp/www_authenticate"][0],/error_description=/);
   }
 });
 
