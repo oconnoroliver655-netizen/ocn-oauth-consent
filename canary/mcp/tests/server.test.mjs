@@ -1,11 +1,9 @@
 import {test,after} from "node:test";
 import assert from "node:assert/strict";
-import {start} from "../server.mjs";
-
 const ORIGIN="https://ocn-mcp-canary.onrender.com";
 process.env.OCN_PUBLIC_ORIGIN=ORIGIN;
-// Server module captures origin at import time. The deploy env must therefore
-// be present before start; tests spawn with OCN_PUBLIC_ORIGIN already set.
+// Import after env initialization: the public origin is pinned on startup.
+const {start}=await import("../server.mjs");
 const server=start(0);
 await new Promise(r=>server.once("listening",r));
 after(()=>server.close());
