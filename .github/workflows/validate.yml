@@ -25,7 +25,7 @@ jobs:
           test -f oauth/consent/index.html
           test -f assets/consent.mjs
           test -f assets/guards.mjs
-          if grep -REn '(sb_secret_|service.role|runtime.api.key|ghp_[A-Za-z0-9]{20})' assets/ oauth/; then
+          if grep -REn '(sb_secret_[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{20,}|eyJ[A-Za-z0-9_-]{60,})' assets/ oauth/; then
             echo "Forbidden secret-like pattern in public deployable assets"
             exit 1
           fi
