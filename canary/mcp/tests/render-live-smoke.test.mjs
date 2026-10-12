@@ -58,11 +58,31 @@ test("public ping works over actual Render HTTPS without credentials",{timeout:5
   assert.deepEqual(r.body.result.structuredContent,{pong:true,privileged:false});
 });
 
-test("owner probe MUST refuse unauthenticated caller",{timeout:50000},async()=>{
-  const r=await rpc("tools/call",{name:"owner_auth_probe",arguments:{}});
-  assert.equal(r.status,401);
-  assert.match(r.headers.get("www-authenticate"),/oauth-protected-resource/);
-  assert.equal(r.body.error.code,-32001);
+test("OAuth probe is hidden on the existing ping-only MCP URL",{timeout:50000},async()=>{
+  const r=await rpc("tools/list");
+  assert.deepEqual(r.body.result.tools.map(t=>t.name),["ping"]);
+});
+test("separate OAuth test path advertises protected tool and always challenges",{timeout:50000},async()=>{
+  const opts={...options};
+  const scan=await fetch(base+"/mcp-oauth",{method:"POST",headers:opts,
+    signal:AbortSignal.timeout(45000),
+    body:JSON.stringify({jsonrpc:"2.0",id:111,method:"tools/list",params:{}})});
+  assert.equal(scan.status,200);
+  const tools=(await scan.json()).result.tools;
+  assert.deepEqual(tools.map(t=>t.name),["ping","owner_auth_probe"]);
+  assert.deepEqual(tools[1].securitySchemes,[{type:"oauth2",scopes:["openid","email"]}]);
+  for(const token of ["","Bearer forged"]){
+    const headers={...opts,...(token?{authorization:token}:{})};
+    const response=await fetch(base+"/mcp-oauth",{method:"POST",headers,
+      signal:AbortSignal.timeout(45000),
+      body:JSON.stringify({jsonrpc:"2.0",id:112,method:"tools/call",
+        params:{name:"owner_auth_probe",arguments:{}}})});
+    assert.equal(response.status,200);
+    const data=await response.json();
+    assert.equal(data.result.isError,true);
+    assert.match(data.result._meta["mcp/www_authenticate"][0],/oauth-protected-resource/);
+    assert.match(data.result._meta["mcp/www_authenticate"][0],/error="invalid_token"/);
+  }
 });
 
 test("untrusted access to unlisted machine tool is refused",{timeout:50000},async()=>{
