@@ -57,7 +57,7 @@ test("initialize responds with supported protocol and tool capability",async()=>
 test("tool list has no device file terminal or shell tools",async()=>{
   const r=await rpc("tools/list");assert.equal(r.status,200);
   const b=await r.json();
-  assert.deepEqual(b.result.tools.map(t=>t.name),["ping","owner_auth_probe"]);
+  assert.deepEqual(b.result.tools.map(t=>t.name),["ping"]);
 });
 test("anonymous ping is harmless",async()=>{
   const r=await rpc("tools/call",{name:"ping",arguments:{}});
