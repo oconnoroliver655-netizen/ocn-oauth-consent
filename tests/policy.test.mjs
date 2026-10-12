@@ -33,6 +33,8 @@ test("site is disabled until all exact owner-controlled settings exist", () => {
 
 test("authorization_id must be singular, opaque and isolated from untrusted parameters", () => {
   assert.equal(getAuthorizationId("?authorization_id="+ID),ID);
+  assert.equal(getAuthorizationId("?authorization_id="+ID+"&code=pkce-test-code"),ID);
+  assert.equal(getAuthorizationId("?authorization_id="+ID+"&error=access_denied"),ID);
   for (const q of ["","?authorization_id=x","?authorization_id="+ID+"&authorization_id="+ID,
     "?authorization_id="+ID+"&redirect_uri=https://evil.example","?authorization_id=%3Cscript%3E"])
     assert.equal(getAuthorizationId(q),null,q);
