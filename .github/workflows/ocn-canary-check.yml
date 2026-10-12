@@ -1,0 +1,21 @@
+name: OCN isolated HTTPS MCP canary tests
+on:
+  push:
+    branches:
+      - staging/ocn-mcp-https-canary-20261012
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and run isolated protocol canary tests
+        run: |
+          python -m py_compile canary_server.py tests/test_canary_server.py
+          python -m unittest discover -s tests -p 'test_canary_server.py' -v
+      - name: Ensure no external integrations
+        run: |
+          ! grep -E 'supabase|service_role|os.system|subprocess|requests|urllib.request|socket.create_connection|win32|powershell' canary_server.py
