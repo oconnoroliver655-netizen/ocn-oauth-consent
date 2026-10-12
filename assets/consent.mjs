@@ -1,6 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.117.3?bundle";
 import { CONFIG } from "./config.mjs";
 import { isConfigured, getAuthorizationId, isOwner, authorizeDetails, matchingCallback, returnToConsent } from "./guards.mjs";
+import { describeSignInError } from "./auth-email-errors.mjs";
 
 const status = document.getElementById("status");
 const form = document.getElementById("signin");
@@ -52,11 +53,13 @@ async function main() {
           options: { shouldCreateUser: false, emailRedirectTo: redirect }
         });
         report(error
-          ? "The sign-in email was not accepted. Verify that the owner account exists and that email sign-in is enabled."
-          : "If the email belongs to the existing owner, open the sign-in link in this browser.");
+          ? describeSignInError(error)
+          : "A sign-in email was requested. Check the registered inbox and open the link in this browser. Avoid repeated requests.");
       } catch {
-        report("Unable to send an email link at this time.");
-      } finally { send.disabled = false; }
+        report(describeSignInError(null));
+      }
+      // Intentionally keep this button disabled after one request per loaded page.
+      // Repeated taps exhaust the project's extremely limited email quota.
     });
     return;
   }
