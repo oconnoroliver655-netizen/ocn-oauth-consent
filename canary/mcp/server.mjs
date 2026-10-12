@@ -31,10 +31,6 @@ function toolList(){
     {name:"ping",description:"Public protocol canary; no machine access.",
       inputSchema:{type:"object",properties:{},additionalProperties:false},
       securitySchemes:[{type:"noauth"}],
-      annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}},
-    {name:"owner_auth_probe",description:"OAuth handshake only; ALWAYS denies access.",
-      inputSchema:{type:"object",properties:{},additionalProperties:false},
-      securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
       annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}}
   ];
 }
