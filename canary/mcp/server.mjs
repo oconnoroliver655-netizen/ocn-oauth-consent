@@ -109,7 +109,7 @@ async function handle(req,res){
       structuredContent:{pong:true,privileged:false},isError:false}));
   if (message.params.name==="owner_auth_probe" && oauthProbePath){
     const challenge='Bearer resource_metadata="'+ORIGIN+
-      '/.well-known/oauth-protected-resource", error="invalid_token", scope="openid email"';
+      '/.well-known/oauth-protected-resource", error="invalid_token", error_description="Owner sign-in test only; this tool never grants access", scope="openid email"';
     // The OAuth test tool is intentionally never authorized. MCP's
     // tool-level challenge tells ChatGPT to present the sign-in flow.
     // A bearer cannot grant any operation on this route.
