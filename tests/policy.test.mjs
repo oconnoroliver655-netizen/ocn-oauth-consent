@@ -82,7 +82,7 @@ test("consent URL survives passwordless email sign-in without leaking fragments"
 
 test("public config pins only verified owner UUID and leaves OAuth client disabled", () => {
   const conf=readFileSync(new URL("../assets/config.mjs",import.meta.url),"utf8");
-  assert.match(conf,/ownerUserId:\\s*"[0-9a-f-]{36}"/i);
+  assert.match(conf,/ownerUserId:\s*"[0-9a-f-]{36}"/i);
   assert.doesNotMatch(conf,/PENDING_VERIFIED_OWNER_UUID/);
   assert.match(conf,/PENDING_APPROVED_CLIENT_ID/);
   assert.match(conf,/PENDING_REGISTERED_CALLBACK_HTTPS_URL/);
