@@ -64,12 +64,26 @@ test("anonymous ping is harmless",async()=>{
   assert.equal(r.status,200);
   assert.deepEqual((await r.json()).result.structuredContent,{pong:true,privileged:false});
 });
-test("OAuth probe rejects both anonymous and bearer callers",async()=>{
-  for(const h of [{},{"authorization":"Bearer arbitrary"}]){
-    const r=await rpc("tools/call",{name:"owner_auth_probe",arguments:{}},1,h);
-    assert.equal(r.status,401);
-    assert.match(r.headers.get("www-authenticate"),/oauth-protected-resource/);
-    assert.equal((await r.json()).error.code,-32001);
+test("OAuth probe is NOT listed on the existing ping-only endpoint",async()=>{
+  const r=await rpc("tools/list");
+  assert.deepEqual((await r.json()).result.tools.map(t=>t.name),["ping"]);
+});
+test("OAuth test route advertises protected probe and returns MCP tool-level challenge",async()=>{
+  const listing=await httpFetch(base+"/mcp-oauth",{method:"POST",headers:headers(),
+    body:JSON.stringify({jsonrpc:"2.0",id:1,method:"tools/list",params:{}})});
+  assert.equal(listing.status,200);
+  const list=(await listing.json()).result.tools;
+  assert.deepEqual(list.map(t=>t.name),["ping","owner_auth_probe"]);
+  assert.deepEqual(list[1].securitySchemes,[{type:"oauth2",scopes:["openid","email"]}]);
+  for(const auth of [{},{"authorization":"Bearer forged"}]){
+    const r=await httpFetch(base+"/mcp-oauth",{method:"POST",headers:headers(auth),
+      body:JSON.stringify({jsonrpc:"2.0",id:2,method:"tools/call",
+        params:{name:"owner_auth_probe",arguments:{}}})});
+    assert.equal(r.status,200);
+    const response=await r.json();
+    assert.equal(response.result.isError,true);
+    assert.match(response.result._meta["mcp/www_authenticate"][0],/resource_metadata=/);
+    assert.match(response.result._meta["mcp/www_authenticate"][0],/error="invalid_token"/);
   }
 });
 test("origin and host constraints deny unsolicited callers",async()=>{
