@@ -24,7 +24,10 @@ export function getAuthorizationId(search) {
   const p = new URLSearchParams(search);
   const all = p.getAll("authorization_id");
   if (all.length !== 1 || !AUTH_ID.test(all[0])) return null;
-  if ([...p.keys()].some(k => k !== "authorization_id")) return null;
+  // Supabase email PKCE callbacks may append code/error fields to the
+  // original consent URL. Never trust these as an OAuth client callback.
+  const loginParams = new Set(["authorization_id", "code", "error", "error_code", "error_description"]);
+  if ([...p.keys()].some(k => !loginParams.has(k))) return null;
   return all[0];
 }
 
