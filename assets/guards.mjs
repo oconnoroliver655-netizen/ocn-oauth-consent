@@ -43,8 +43,8 @@ export function matchingCallback(value, approved, allowOAuthParams = true) {
 }
 
 export function isOwner(user, config) {
-  return isConfigured(config) && user && typeof user === "object" &&
-    user.id === config.ownerUserId;
+  return Boolean(isConfigured(config) && user && typeof user === "object" &&
+    user.id === config.ownerUserId);
 }
 
 export function authorizeDetails(details, authorizationId, config) {
