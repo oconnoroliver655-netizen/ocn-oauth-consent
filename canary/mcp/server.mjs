@@ -26,13 +26,21 @@ function respond(res,status,value,extra={}) {
 }
 const err=(id,code,message)=>({jsonrpc:"2.0",id,error:{code,message}});
 const ok=(id,result)=>({jsonrpc:"2.0",id,result});
-function toolList(){
-  return [
+function toolList(oauthProbe=false){
+  const listed = [
     {name:"ping",description:"Public protocol canary; no machine access.",
       inputSchema:{type:"object",properties:{},additionalProperties:false},
       securitySchemes:[{type:"noauth"}],
       annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}}
   ];
+  if (oauthProbe) listed.push({
+    name:"owner_auth_probe",
+    description:"OAuth handshake check only. Always refuses all tokens. No device access.",
+    inputSchema:{type:"object",properties:{},additionalProperties:false},
+    securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
+    annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
+  });
+  return listed;
 }
 async function handle(req,res){
   const meta=resource();
@@ -45,7 +53,9 @@ async function handle(req,res){
     return respond(res,403,{error:"Browser origins disabled"});
   if (req.url==="/.well-known/oauth-protected-resource")
     return req.method==="GET" ? respond(res,200,meta) : respond(res,405,{error:"Method not allowed"});
-  if (req.url!=="/mcp") return respond(res,404,{error:"Not found"});
+  const oauthProbePath = req.url === "/mcp-oauth";
+  if (req.url!=="/mcp" && !oauthProbePath)
+    return respond(res,404,{error:"Not found"});
   if (req.method!=="POST") return respond(res,405,{error:"MCP requires POST"});
   if (req.headers["content-type"]?.split(";")[0]?.trim()?.toLowerCase()!=="application/json")
     return respond(res,415,{error:"Expected JSON"});
@@ -87,7 +97,8 @@ async function handle(req,res){
     }));
   }
   if (method==="ping") return respond(res,200,ok(id,{}));
-  if (method==="tools/list") return respond(res,200,ok(id,{tools:toolList()}));
+  if (method==="tools/list")
+    return respond(res,200,ok(id,{tools:toolList(oauthProbePath)}));
   if (method!=="tools/call") return respond(res,200,err(id,-32601,"Method not found"));
   if (!message.params || typeof message.params!=="object" ||
       !message.params.arguments || typeof message.params.arguments!=="object" ||
@@ -96,11 +107,17 @@ async function handle(req,res){
   if (message.params.name==="ping")
     return respond(res,200,ok(id,{content:[{type:"text",text:'{"pong":true,"privileged":false}'}],
       structuredContent:{pong:true,privileged:false},isError:false}));
-  if (message.params.name==="owner_auth_probe"){
+  if (message.params.name==="owner_auth_probe" && oauthProbePath){
     const challenge='Bearer resource_metadata="'+ORIGIN+
       '/.well-known/oauth-protected-resource", error="invalid_token", scope="openid email"';
-    return respond(res,401,err(id,-32001,"OAuth setup incomplete; no access granted"),
-      {"www-authenticate":challenge});
+    // The OAuth test tool is intentionally never authorized. MCP's
+    // tool-level challenge tells ChatGPT to present the sign-in flow.
+    // A bearer cannot grant any operation on this route.
+    return respond(res,200,ok(id,{
+      content:[{type:"text",text:"Authorization test only. No machine permissions."}],
+      isError:true,
+      _meta:{"mcp/www_authenticate":[challenge]}
+    }));
   }
   return respond(res,200,ok(id,{content:[{type:"text",text:"Unknown tool"}],isError:true}));
 }
