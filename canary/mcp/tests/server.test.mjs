@@ -84,6 +84,7 @@ test("OAuth test route advertises protected probe and returns MCP tool-level cha
     assert.equal(response.result.isError,true);
     assert.match(response.result._meta["mcp/www_authenticate"][0],/resource_metadata=/);
     assert.match(response.result._meta["mcp/www_authenticate"][0],/error="invalid_token"/);
+    assert.match(response.result._meta["mcp/www_authenticate"][0],/error_description=/);
   }
 });
 test("origin and host constraints deny unsolicited callers",async()=>{
