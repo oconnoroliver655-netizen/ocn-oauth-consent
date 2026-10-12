@@ -80,10 +80,12 @@ test("consent URL survives passwordless email sign-in without leaking fragments"
   assert.throws(()=>returnToConsent("https://example.com/","bad"));
 });
 
-test("public config intentionally contains no trusted production identity", () => {
+test("public config pins only verified owner UUID and leaves OAuth client disabled", () => {
   const conf=readFileSync(new URL("../assets/config.mjs",import.meta.url),"utf8");
-  assert.match(conf,/PENDING_VERIFIED_OWNER_UUID/);
+  assert.match(conf,/ownerUserId:\\s*"[0-9a-f-]{36}"/i);
+  assert.doesNotMatch(conf,/PENDING_VERIFIED_OWNER_UUID/);
   assert.match(conf,/PENDING_APPROVED_CLIENT_ID/);
+  assert.match(conf,/PENDING_REGISTERED_CALLBACK_HTTPS_URL/);
   assert.doesNotMatch(conf,/sb_secret_|service_role|sk_[A-Za-z0-9]{16,}/);
 });
 
