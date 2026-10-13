@@ -1,4 +1,5 @@
 import {makeHandler, createBackend as createCiBackend, TOOLS as CI_TOOLS} from "./pr529-ci-guard.mjs";
+import {WINDOWS_TOOLS,validWindowsCall,callWindowsOperation} from "./windows-tools.mjs";
 const ciBackend = createCiBackend();
 // Owner OAuth MCP endpoint: unprivileged probe plus strictly bounded
 // read-only Windows health diagnostic; no file, desktop, shell or admin tools.
@@ -58,7 +59,7 @@ function toolList(oauthProbe=false){
     annotations:{readOnlyHint:name==="poll_machine_health",destructiveHint:false,openWorldHint:false}
   });
   // Reuse the already-installed OCN OAuth Probe plugin; no new ChatGPT plugin required.
-  if (oauthProbe) listed.push(...CI_TOOLS);
+  if (oauthProbe) listed.push(...CI_TOOLS,...WINDOWS_TOOLS);
   return listed;
 }
 function ownerChallenge(){
@@ -170,7 +171,9 @@ async function handle(req,res){
     (oauthProbePath && tool==="cancel_stale_pr529_ci") ?
       (exactEmpty || (keys==="max_cancellations" &&
         Number.isInteger(args.max_cancellations) && args.max_cancellations>=1 &&
-        args.max_cancellations<=25)) : exactEmpty;
+        args.max_cancellations<=25)) :
+    (oauthProbePath && (tool==="submit_windows_operation" || tool==="poll_windows_operation")) ?
+      validWindowsCall(tool,args) : exactEmpty;
   if (!validCall)
     return respond(res,200,ok(id,{content:[{type:"text",text:"Invalid tool arguments"}],isError:true}));
   if (message.params.name==="ping")
@@ -218,6 +221,19 @@ async function handle(req,res){
     }));
     return respond(res,200,ok(id,{
       content:[{type:"text",text:result.error||"Device diagnostic unavailable"}],isError:true
+    }));
+  }
+  // Submit to the previously bound Windows Agent, with signed owner OAuth.
+  if (oauthProbePath && (tool==="submit_windows_operation" || tool==="poll_windows_operation")){
+    const result=await callWindowsOperation(String(req.headers.authorization||""),tool,args);
+    if(result.unauthorized)return respond(res,200,ok(id,ownerChallenge()));
+    if(result.value)return respond(res,200,ok(id,{
+      content:[{type:"text",text:JSON.stringify(result.value)}],
+      structuredContent:result.value,isError:false
+    }));
+    return respond(res,200,ok(id,{
+      content:[{type:"text",text:result.error||"Windows operation unavailable"}],
+      isError:true
     }));
   }
   // CI Guard is owner-bound and disabled for writes until separately configured.
