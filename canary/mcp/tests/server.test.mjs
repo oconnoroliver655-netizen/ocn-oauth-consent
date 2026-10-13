@@ -73,10 +73,12 @@ test("OAuth test route advertises protected probe and returns MCP tool-level cha
     body:JSON.stringify({jsonrpc:"2.0",id:1,method:"tools/list",params:{}})});
   assert.equal(listing.status,200);
   const list=(await listing.json()).result.tools;
-  assert.deepEqual(list.map(t=>t.name),["ping","owner_auth_probe","submit_machine_health","poll_machine_health","inspect_pr529_ci","cancel_stale_pr529_ci"]);
+  assert.deepEqual(list.map(t=>t.name),["ping","owner_auth_probe","submit_machine_health","poll_machine_health","inspect_pr529_ci","cancel_stale_pr529_ci","submit_windows_operation","poll_windows_operation"]);
   assert.deepEqual(list.slice(2,4).map(t=>t.annotations.destructiveHint),[false,false]);
   assert.equal(list[4].annotations.readOnlyHint,true);
   assert.equal(list[5].annotations.destructiveHint,true);
+  assert.equal(list[6].annotations.destructiveHint,true);
+  assert.equal(list[7].annotations.readOnlyHint,true);
   assert.deepEqual(list[1].securitySchemes,[{type:"oauth2",scopes:["openid","email"]}]);
   for(const auth of [{},{"authorization":"Bearer forged"}]){
     const r=await httpFetch(base+"/mcp-oauth",{method:"POST",headers:headers(auth),
@@ -95,7 +97,9 @@ test("health-only tools require signed owner and never expose file/shell",async(
     ["submit_machine_health",{}],
     ["poll_machine_health",{command_id:42,nonce:"a".repeat(32)}],
     ["inspect_pr529_ci",{}],
-    ["cancel_stale_pr529_ci",{}]
+    ["cancel_stale_pr529_ci",{}],
+    ["submit_windows_operation",{operation:"desktop_health",payload:{}}],
+    ["poll_windows_operation",{command_id:1,nonce:"a".repeat(32)}]
   ]){
     const r=await httpFetch(base+"/mcp-oauth",{method:"POST",headers:headers(),
       body:JSON.stringify({jsonrpc:"2.0",id:8,method:"tools/call",params:{name,arguments:args}})});
@@ -110,6 +114,8 @@ test("health-only tools require signed owner and never expose file/shell",async(
     {name:"poll_machine_health",arguments:{command_id:1,nonce:"a".repeat(32),extra:true}},
     {name:"cancel_stale_pr529_ci",arguments:{max_cancellations:999}},
     {name:"inspect_pr529_ci",arguments:{repo:"other"}},
+    {name:"submit_windows_operation",arguments:{operation:"arbitrary_code",payload:{}}},
+    {name:"poll_windows_operation",arguments:{command_id:1,nonce:"wrong"}},
     {name:"submit_file_write",arguments:{}}
   ]){
     const r=await httpFetch(base+"/mcp-oauth",{method:"POST",headers:headers(),
