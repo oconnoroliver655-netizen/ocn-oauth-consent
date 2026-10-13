@@ -70,9 +70,13 @@ test("separate OAuth test path advertises protected tool and always challenges",
   assert.equal(scan.status,200);
   const tools=(await scan.json()).result.tools;
   assert.deepEqual(tools.slice(0,4).map(t=>t.name),["ping","owner_auth_probe","submit_machine_health","poll_machine_health"]);
-  // This smoke test also runs while the previous healthy deployment is live.
-  const extras=tools.slice(4).map(t=>t.name);
-  assert.ok(extras.length===0 || (extras.length===2 && extras[0]==="inspect_pr529_ci" && extras[1]==="cancel_stale_pr529_ci"));
+  // Production now MUST list both CI Guard tools on the already-installed OAuth route.
+  assert.deepEqual(tools.map(t=>t.name),[
+    "ping","owner_auth_probe","submit_machine_health","poll_machine_health",
+    "inspect_pr529_ci","cancel_stale_pr529_ci"
+  ]);
+  assert.equal(tools[4].annotations.readOnlyHint,true);
+  assert.equal(tools[5].annotations.destructiveHint,true);
   assert.deepEqual(tools[1].securitySchemes,[{type:"oauth2",scopes:["openid","email"]}]);
   for(const token of ["","Bearer forged"]){
     const headers={...opts,...(token?{authorization:token}:{})};
@@ -86,6 +90,20 @@ test("separate OAuth test path advertises protected tool and always challenges",
     assert.match(data.result._meta["mcp/www_authenticate"][0],/oauth-protected-resource/);
     assert.match(data.result._meta["mcp/www_authenticate"][0],/error="invalid_token"/);
     assert.match(data.result._meta["mcp/www_authenticate"][0],/error_description=/);
+  }
+});
+
+test("unauthenticated CI Guard calls challenge instead of accessing GitHub",{timeout:50000},async()=>{
+  for(const tool of ["inspect_pr529_ci","cancel_stale_pr529_ci"]){
+    const response=await fetch(base+"/mcp-oauth",{
+      method:"POST",headers:options,signal:AbortSignal.timeout(45000),
+      body:JSON.stringify({jsonrpc:"2.0",id:153,method:"tools/call",
+        params:{name:tool,arguments:{}}})
+    });
+    assert.equal(response.status,200);
+    const result=(await response.json()).result;
+    assert.equal(result.isError,true);
+    assert.match(result._meta["mcp/www_authenticate"][0],/invalid_token/);
   }
 });
 
