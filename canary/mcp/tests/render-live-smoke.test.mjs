@@ -73,10 +73,13 @@ test("separate OAuth test path advertises protected tool and always challenges",
   // Production now MUST list both CI Guard tools on the already-installed OAuth route.
   assert.deepEqual(tools.map(t=>t.name),[
     "ping","owner_auth_probe","submit_machine_health","poll_machine_health",
-    "inspect_pr529_ci","cancel_stale_pr529_ci"
+    "inspect_pr529_ci","cancel_stale_pr529_ci",
+    "submit_windows_operation","poll_windows_operation"
   ]);
   assert.equal(tools[4].annotations.readOnlyHint,true);
   assert.equal(tools[5].annotations.destructiveHint,true);
+  assert.equal(tools[6].annotations.destructiveHint,true);
+  assert.equal(tools[7].annotations.readOnlyHint,true);
   assert.deepEqual(tools[1].securitySchemes,[{type:"oauth2",scopes:["openid","email"]}]);
   for(const token of ["","Bearer forged"]){
     const headers={...opts,...(token?{authorization:token}:{})};
@@ -99,6 +102,23 @@ test("unauthenticated CI Guard calls challenge instead of accessing GitHub",{tim
       method:"POST",headers:options,signal:AbortSignal.timeout(45000),
       body:JSON.stringify({jsonrpc:"2.0",id:153,method:"tools/call",
         params:{name:tool,arguments:{}}})
+    });
+    assert.equal(response.status,200);
+    const result=(await response.json()).result;
+    assert.equal(result.isError,true);
+    assert.match(result._meta["mcp/www_authenticate"][0],/invalid_token/);
+  }
+});
+
+test("new Windows tools require real owner OAuth before any queue action",{timeout:50000},async()=>{
+  for(const [name,args] of [
+    ["submit_windows_operation",{operation:"desktop_health",payload:{}}],
+    ["poll_windows_operation",{command_id:1,nonce:"a".repeat(32)}]
+  ]){
+    const response=await fetch(base+"/mcp-oauth",{method:"POST",headers:options,
+      signal:AbortSignal.timeout(45000),
+      body:JSON.stringify({jsonrpc:"2.0",id:175,method:"tools/call",
+        params:{name,arguments:args}})
     });
     assert.equal(response.status,200);
     const result=(await response.json()).result;
