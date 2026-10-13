@@ -1,4 +1,5 @@
-import {makeHandler} from "./pr529-ci-guard.mjs";
+import {makeHandler, createBackend as createCiBackend, TOOLS as CI_TOOLS} from "./pr529-ci-guard.mjs";
+const ciBackend = createCiBackend();
 // Owner OAuth MCP endpoint: unprivileged probe plus strictly bounded
 // read-only Windows health diagnostic; no file, desktop, shell or admin tools.
 // Authentication for each protected call remains in Supabase's signed ES256
@@ -56,6 +57,8 @@ function toolList(oauthProbe=false){
     securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
     annotations:{readOnlyHint:name==="poll_machine_health",destructiveHint:false,openWorldHint:false}
   });
+  // Reuse the already-installed OCN OAuth Probe plugin; no new ChatGPT plugin required.
+  if (oauthProbe) listed.push(...CI_TOOLS);
   return listed;
 }
 function ownerChallenge(){
@@ -164,7 +167,10 @@ async function handle(req,res){
   const validCall=tool==="poll_machine_health" ?
     keys==="command_id,nonce" && Number.isSafeInteger(args.command_id) &&
     args.command_id>0 && typeof args.nonce==="string" && /^[0-9a-f]{32}$/.test(args.nonce) :
-    exactEmpty;
+    (oauthProbePath && tool==="cancel_stale_pr529_ci") ?
+      (exactEmpty || (keys==="max_cancellations" &&
+        Number.isInteger(args.max_cancellations) && args.max_cancellations>=1 &&
+        args.max_cancellations<=25)) : exactEmpty;
   if (!validCall)
     return respond(res,200,ok(id,{content:[{type:"text",text:"Invalid tool arguments"}],isError:true}));
   if (message.params.name==="ping")
@@ -213,6 +219,28 @@ async function handle(req,res){
     return respond(res,200,ok(id,{
       content:[{type:"text",text:result.error||"Device diagnostic unavailable"}],isError:true
     }));
+  }
+  // CI Guard is owner-bound and disabled for writes until separately configured.
+  if (oauthProbePath && (tool==="inspect_pr529_ci" || tool==="cancel_stale_pr529_ci")) {
+    if (!(await ciBackend.authenticated(String(req.headers.authorization||""))))
+      return respond(res,200,ok(id,ownerChallenge()));
+    try {
+      const data=tool==="inspect_pr529_ci" ? await ciBackend.scan() :
+        await ciBackend.cancel(args.max_cancellations??15);
+      return respond(res,200,ok(id,{
+        content:[{type:"text",text:JSON.stringify(data)}],
+        structuredContent:data,isError:false
+      }));
+    } catch(e) {
+      const message=e?.message==="GITHUB_NOT_CONFIGURED" ?
+        "GitHub Actions credential has not been configured" :
+        e?.message==="WRITES_DISABLED" ?
+        "CI Guard cancellation remains disabled" :
+        "CI Guard unavailable or request denied";
+      return respond(res,200,ok(id,{
+        content:[{type:"text",text:message}],isError:true
+      }));
+    }
   }
   return respond(res,200,ok(id,{content:[{type:"text",text:"Unknown tool"}],isError:true}));
 }
