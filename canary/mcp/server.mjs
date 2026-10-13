@@ -1,3 +1,4 @@
+import {makeHandler} from "./pr529-ci-guard.mjs";
 // Owner OAuth MCP endpoint: unprivileged probe plus strictly bounded
 // read-only Windows health diagnostic; no file, desktop, shell or admin tools.
 // Authentication for each protected call remains in Supabase's signed ES256
@@ -102,6 +103,9 @@ async function handle(req,res){
     return respond(res,403,{error:"Browser origins disabled"});
   if (req.url==="/.well-known/oauth-protected-resource")
     return req.method==="GET" ? respond(res,200,meta) : respond(res,405,{error:"Method not allowed"});
+  // PR529 guard has an independent, owner-OAuth-bound entrypoint.
+  if (req.url === "/mcp-ci-guard")
+    return makeHandler({origin:ORIGIN})(req,res);
   const oauthProbePath = req.url === "/mcp-oauth";
   if (req.url!=="/mcp" && !oauthProbePath)
     return respond(res,404,{error:"Not found"});
