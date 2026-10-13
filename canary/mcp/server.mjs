@@ -244,10 +244,36 @@ async function handle(req,res){
   }
   return respond(res,200,ok(id,{content:[{type:"text",text:"Unknown tool"}],isError:true}));
 }
+// Temporary, opt-in, read-only GitHub credential preflight.
+// No token, response body, commit SHA, or error message enters the logs.
+async function runPr529CredentialPreflight(){
+  const api="https://api.github.com/repos/oconnoroliver655-netizen/chatgpt-local-bridge";
+  let pullRead=false,actionsRead=false;
+  try {
+    const pr=await ciBackend.github("GET",api+"/pulls/529");
+    pullRead=pr?.state==="open" &&
+      pr?.head?.ref==="feature/ocn-owner-bound-mcp-files-20261013" &&
+      /^[a-f0-9]{40}$/i.test(pr?.head?.sha||"");
+  } catch {}
+  try {
+    const runs=await ciBackend.github("GET",api+"/actions/runs?per_page=1");
+    actionsRead=Array.isArray(runs?.workflow_runs);
+  } catch {}
+  console.log(JSON.stringify({
+    event:"PR529_CREDENTIAL_PREFLIGHT",
+    pull_request_read:pullRead,actions_read:actionsRead,mutations:false
+  }));
+}
 export function start(port=PORT){
   const server=createServer((req,res)=>{
     handle(req,res).catch(()=>respond(res,500,{error:"Internal error"}));
   });
-  return server.listen(port,"0.0.0.0");
+  server.listen(port,"0.0.0.0");
+  if(process.env.PR529_CREDENTIAL_PREFLIGHT==="true"){
+    server.once("listening",()=>{void runPr529CredentialPreflight().catch(()=>{
+      console.log(JSON.stringify({event:"PR529_CREDENTIAL_PREFLIGHT",status:"unavailable",mutations:false}));
+    });});
+  }
+  return server;
 }
 if (process.argv[1] && import.meta.url===new URL("file://"+process.argv[1]).href) start();
