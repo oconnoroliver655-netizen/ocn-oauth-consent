@@ -69,7 +69,10 @@ test("separate OAuth test path advertises protected tool and always challenges",
     body:JSON.stringify({jsonrpc:"2.0",id:111,method:"tools/list",params:{}})});
   assert.equal(scan.status,200);
   const tools=(await scan.json()).result.tools;
-  assert.deepEqual(tools.map(t=>t.name),["ping","owner_auth_probe","submit_machine_health","poll_machine_health"]);
+  assert.deepEqual(tools.slice(0,4).map(t=>t.name),["ping","owner_auth_probe","submit_machine_health","poll_machine_health"]);
+  // This smoke test also runs while the previous healthy deployment is live.
+  const extras=tools.slice(4).map(t=>t.name);
+  assert.ok(extras.length===0 || (extras.length===2 && extras[0]==="inspect_pr529_ci" && extras[1]==="cancel_stale_pr529_ci"));
   assert.deepEqual(tools[1].securitySchemes,[{type:"oauth2",scopes:["openid","email"]}]);
   for(const token of ["","Bearer forged"]){
     const headers={...opts,...(token?{authorization:token}:{})};
