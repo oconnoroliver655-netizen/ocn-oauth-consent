@@ -108,13 +108,34 @@ async function handle(req,res){
     return respond(res,200,ok(id,{content:[{type:"text",text:'{"pong":true,"privileged":false}'}],
       structuredContent:{pong:true,privileged:false},isError:false}));
   if (message.params.name==="owner_auth_probe" && oauthProbePath){
+    // A real signed owner/session check is required; never accept a dummy bearer.
+    // The validator is separately pinned and has NO machine-control actions.
+    let verified=false;
+    const bearer=String(req.headers.authorization||"");
+    if (bearer.startsWith("Bearer ") && bearer.length<=8200) {
+      try {
+        const result=await fetch(
+          "https://ouxniljtjxnrkwakkvbv.supabase.co/functions/v1/ocn-oauth-validator",{
+          method:"POST",
+          headers:{"content-type":"application/json","authorization":bearer},
+          body:JSON.stringify({action:"owner_auth_probe"}),
+          signal:AbortSignal.timeout(6000),
+        });
+        const body=await result.json();
+        verified=result.status===200 && body?.ok===true && body?.owner_verified===true &&
+          body?.machine_control===false;
+      } catch {
+        verified=false;
+      }
+    }
+    if (verified) return respond(res,200,ok(id,{
+      content:[{type:"text",text:"Verified owner OAuth session. No machine permissions."}],
+      structuredContent:{owner_verified:true,privileged:false},isError:false
+    }));
     const challenge='Bearer resource_metadata="'+ORIGIN+
-      '/.well-known/oauth-protected-resource", error="invalid_token", error_description="Owner sign-in test only; this tool never grants access", scope="openid email"';
-    // The OAuth test tool is intentionally never authorized. MCP's
-    // tool-level challenge tells ChatGPT to present the sign-in flow.
-    // A bearer cannot grant any operation on this route.
+      '/.well-known/oauth-protected-resource", error="invalid_token", error_description="Verified owner OAuth session required", scope="openid email"';
     return respond(res,200,ok(id,{
-      content:[{type:"text",text:"Authorization test only. No machine permissions."}],
+      content:[{type:"text",text:"Authentication required. No machine permissions."}],
       isError:true,
       _meta:{"mcp/www_authenticate":[challenge]}
     }));
