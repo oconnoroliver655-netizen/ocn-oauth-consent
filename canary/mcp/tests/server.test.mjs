@@ -73,7 +73,8 @@ test("OAuth test route advertises protected probe and returns MCP tool-level cha
     body:JSON.stringify({jsonrpc:"2.0",id:1,method:"tools/list",params:{}})});
   assert.equal(listing.status,200);
   const list=(await listing.json()).result.tools;
-  assert.deepEqual(list.map(t=>t.name),["ping","owner_auth_probe"]);
+  assert.deepEqual(list.map(t=>t.name),["ping","owner_auth_probe","submit_machine_health","poll_machine_health"]);
+  assert.deepEqual(list.slice(2).map(t=>t.annotations.destructiveHint),[false,false]);
   assert.deepEqual(list[1].securitySchemes,[{type:"oauth2",scopes:["openid","email"]}]);
   for(const auth of [{},{"authorization":"Bearer forged"}]){
     const r=await httpFetch(base+"/mcp-oauth",{method:"POST",headers:headers(auth),
@@ -85,6 +86,29 @@ test("OAuth test route advertises protected probe and returns MCP tool-level cha
     assert.match(response.result._meta["mcp/www_authenticate"][0],/resource_metadata=/);
     assert.match(response.result._meta["mcp/www_authenticate"][0],/error="invalid_token"/);
     assert.match(response.result._meta["mcp/www_authenticate"][0],/error_description=/);
+  }
+});
+test("health-only tools require signed owner and never expose file/shell",async()=>{
+  for(const [name,args] of [
+    ["submit_machine_health",{}],
+    ["poll_machine_health",{command_id:42,nonce:"a".repeat(32)}]
+  ]){
+    const r=await httpFetch(base+"/mcp-oauth",{method:"POST",headers:headers(),
+      body:JSON.stringify({jsonrpc:"2.0",id:8,method:"tools/call",params:{name,arguments:args}})});
+    assert.equal(r.status,200);
+    const b=(await r.json()).result;
+    assert.equal(b.isError,true);
+    assert.match(b._meta["mcp/www_authenticate"][0],/invalid_token/);
+  }
+  for(const invalid of [
+    {name:"submit_machine_health",arguments:{path:"D:\\\\secret.txt"}},
+    {name:"poll_machine_health",arguments:{command_id:1,nonce:"bad"}},
+    {name:"poll_machine_health",arguments:{command_id:1,nonce:"a".repeat(32),extra:true}},
+    {name:"submit_file_write",arguments:{}}
+  ]){
+    const r=await httpFetch(base+"/mcp-oauth",{method:"POST",headers:headers(),
+      body:JSON.stringify({jsonrpc:"2.0",id:9,method:"tools/call",params:invalid})});
+    assert.equal((await r.json()).result.isError,true);
   }
 });
 test("origin and host constraints deny unsolicited callers",async()=>{
