@@ -69,7 +69,7 @@ test("separate OAuth test path advertises protected tool and always challenges",
     body:JSON.stringify({jsonrpc:"2.0",id:111,method:"tools/list",params:{}})});
   assert.equal(scan.status,200);
   const tools=(await scan.json()).result.tools;
-  assert.deepEqual(tools.map(t=>t.name),["ping","owner_auth_probe"]);
+  assert.deepEqual(tools.map(t=>t.name),["ping","owner_auth_probe","submit_machine_health","poll_machine_health"]);
   assert.deepEqual(tools[1].securitySchemes,[{type:"oauth2",scopes:["openid","email"]}]);
   for(const token of ["","Bearer forged"]){
     const headers={...opts,...(token?{authorization:token}:{})};
