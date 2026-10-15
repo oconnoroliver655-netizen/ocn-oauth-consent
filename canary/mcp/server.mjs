@@ -1,8 +1,8 @@
 import {makeHandler, createBackend as createCiBackend, TOOLS as CI_TOOLS} from "./pr529-ci-guard.mjs";
 import {WINDOWS_TOOLS,validWindowsCall,callWindowsOperation} from "./windows-tools.mjs";
 const ciBackend = createCiBackend();
-// Owner OAuth MCP endpoint: unprivileged probe plus strictly bounded
-// read-only Windows health diagnostic; no file, desktop, shell or admin tools.
+// Owner OAuth MCP endpoint: public ping and owner-bound Windows operations.
+// Authentication remains in the signed Supabase OAuth validator.
 // Authentication for each protected call remains in Supabase's signed ES256
 // token validator, not in client-supplied JSON or this publicly exposed host.
 import { createServer } from "node:http";
@@ -10,7 +10,7 @@ const PORT = Number(process.env.PORT || 10000);
 const ORIGIN = process.env.OCN_PUBLIC_ORIGIN || "";
 const VERSIONS = new Set(["2025-03-26","2025-06-18","2025-11-25","2026-07-28"]);
 const ISSUER = "https://ouxniljtjxnrkwakkvbv.supabase.co/auth/v1";
-const LIMIT = 8192;
+// No application-layer fixed JSON body byte limit. Transport/runtime capacity still applies.
 const HEALTH_EDGE = "https://ouxniljtjxnrkwakkvbv.supabase.co/functions/v1/ocn-owner-health-dispatch";
 function resource() {
   try {
@@ -122,13 +122,10 @@ async function handle(req,res){
   if (req.headers["mcp-protocol-version"] &&
       !VERSIONS.has(req.headers["mcp-protocol-version"]))
     return respond(res,400,err(null,-32600,"Unsupported protocol version"));
-  if (Number(req.headers["content-length"]||0)>LIMIT)
-    return respond(res,413,{error:"Body too large"});
-  let length=0;
+  // One MCP request remains one JSON-RPC message (no client-side chunking).
+  // Avoid arbitrary size rejection; Node/Render may still enforce their own limits.
   const chunks=[];
   for await (const chunk of req){
-    length+=chunk.length;
-    if (length>LIMIT) return respond(res,413,{error:"Body too large"});
     chunks.push(chunk);
   }
   let message;

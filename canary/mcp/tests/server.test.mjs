@@ -147,7 +147,19 @@ test("mcp rejects GET, unknown routes and malformed JSON",async()=>{
   assert.equal(bad.status,400);
   assert.equal((await bad.json()).error.code,-32700);
 });
-test("request cap enforces bounded JSON size",async()=>{
-  const r=await rpc("tools/list",{filler:"x".repeat(10000)});
-  assert.equal(r.status,413);
+test("large single MCP JSON body parses without application byte cap",async()=>{
+  const r=await rpc("tools/list",{filler:"x".repeat(262144)});
+  assert.equal(r.status,200);
+  assert.deepEqual((await r.json()).result.tools.map(t=>t.name),["ping"]);
+});
+test("large one-shot file payload is not blocked before owner authentication",async()=>{
+  const body=JSON.stringify({jsonrpc:"2.0",id:41,method:"tools/call",
+    params:{name:"submit_windows_operation",arguments:{
+      operation:"file_write",payload:{path:"C:\\PR530\\large_file.txt",mode:"text",content:"x".repeat(65536)}
+    }}});
+  const r=await httpFetch(base+"/mcp-oauth",{method:"POST",headers:headers(),body});
+  assert.equal(r.status,200);
+  const result=(await r.json()).result;
+  assert.equal(result.isError,true);
+  assert.match(result._meta["mcp/www_authenticate"][0],/invalid_token/);
 });

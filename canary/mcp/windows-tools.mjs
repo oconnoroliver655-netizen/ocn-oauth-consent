@@ -38,8 +38,7 @@ export function validWindowsCall(tool,args){
       args.command_id>0 && typeof args.nonce==="string" && pattern.test(args.nonce);
   if(tool==="submit_windows_operation")
     return keys==="operation,payload" && OPERATIONS.includes(args.operation) &&
-      args.payload!==null&&typeof args.payload==="object"&&!Array.isArray(args.payload) &&
-      JSON.stringify(args.payload).length<=12000;
+      args.payload!==null&&typeof args.payload==="object"&&!Array.isArray(args.payload);
   return false;
 }
 export async function callWindowsOperation(bearer,tool,args){
@@ -52,7 +51,7 @@ export async function callWindowsOperation(bearer,tool,args){
   try{
     const r=await fetch(EDGE,{method:"POST",
       headers:{"authorization":bearer,"content-type":"application/json"},
-      body:JSON.stringify(payload),signal:AbortSignal.timeout(12000)});
+      body:JSON.stringify(payload),signal:AbortSignal.timeout(30000)});
     if(r.status===401)return {unauthorized:true};
     const response=await r.json();
     if(!r.ok||response?.ok!==true)return {error:response?.error||"Windows execution unavailable"};
