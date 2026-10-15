@@ -1,3 +1,5 @@
+import {BROWSER_OPERATIONS, validBrowserPayload} from "./browser-operation-policy.mjs";
+
 // Existing single owner + existing Supabase queue + existing Windows Agent.
 // No new Windows service, no new plugin, no extra secret on Render.
 const EDGE="https://ouxniljtjxnrkwakkvbv.supabase.co/functions/v1/ocn-owner-health-dispatch";
@@ -5,12 +7,13 @@ const OPERATIONS=[
   "file_read","file_read_lines","file_write","file_append",
   "powershell","exec","desktop_health","window_list","screenshot",
   "uia_tree","code_search","audit_recent","process_sessions",
-  "terminal_sessions","desktop_lease_status"
+  "terminal_sessions","desktop_lease_status",
+  ...BROWSER_OPERATIONS
 ];
 export const WINDOWS_TOOLS=[
   {
     name:"submit_windows_operation",
-    description:"Run an owner-authorized operation on the user's existing Windows Agent. Returns a queued command_id and nonce; use poll_windows_operation to obtain the result. Examples: file_read_lines payload {path:'D:\\\\ChatGPT-Local-Bridge\\\\AGENTS.md',offset:0,length:20}; powershell payload {script:'Get-Location',timeout_seconds:30}; window_list payload {}. Same existing device, no new local installation.",
+    description:"Run an owner-authorized operation on the user's existing Windows Agent, including typed browser commands in the existing Chrome profile. Returns a queued command_id and nonce; use poll_windows_operation to obtain the result. Examples: file_read_lines payload {path:'D:\\\\ChatGPT-Local-Bridge\\\\AGENTS.md',offset:0,length:20}; powershell payload {script:'Get-Location',timeout_seconds:30}; window_list payload {}. Same existing device, no new local installation.",
     inputSchema:{type:"object",properties:{
       operation:{type:"string",enum:OPERATIONS},
       payload:{type:"object",additionalProperties:true}
@@ -38,7 +41,9 @@ export function validWindowsCall(tool,args){
       args.command_id>0 && typeof args.nonce==="string" && pattern.test(args.nonce);
   if(tool==="submit_windows_operation")
     return keys==="operation,payload" && OPERATIONS.includes(args.operation) &&
-      args.payload!==null&&typeof args.payload==="object"&&!Array.isArray(args.payload);
+      args.payload!==null&&typeof args.payload==="object"&&!Array.isArray(args.payload) &&
+      (!BROWSER_OPERATIONS.includes(args.operation) ||
+       validBrowserPayload(args.operation,args.payload));
   return false;
 }
 export async function callWindowsOperation(bearer,tool,args){

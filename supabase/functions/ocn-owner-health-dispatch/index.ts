@@ -4,6 +4,7 @@
 // Authentication is delegated to the already-live strict ES256 OAuth validator,
 // which checks signed issuer/client/resource + active consent/session per call.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import {BROWSER_OPERATIONS, validBrowserPayload} from "./browser-operation-policy.mjs";
 
 const SUPABASE = "https://ouxniljtjxnrkwakkvbv.supabase.co";
 const VALIDATOR = SUPABASE + "/functions/v1/ocn-oauth-validator";
@@ -133,13 +134,15 @@ const WINDOWS_OPS = new Set([
   "file_read","file_read_lines","file_write","file_append",
   "powershell","exec","desktop_health","window_list","screenshot",
   "uia_tree","code_search","audit_recent","process_sessions",
-  "terminal_sessions","desktop_lease_status"
+  "terminal_sessions","desktop_lease_status",
+  ...BROWSER_OPERATIONS
 ]);
 const TERMINAL = new Set(["completed","failed","cancelled","expired"]);
 function validWindowsPayload(operation:string, payload:any):boolean {
   if (!WINDOWS_OPS.has(operation) || !payload || typeof payload!=="object" ||
       Array.isArray(payload)) return false;
   const keys=Object.keys(payload);
+  if(operation.startsWith("browser_"))return validBrowserPayload(operation,payload);
   if(operation.startsWith("file_") &&
     (typeof payload.path!=="string" || payload.path.length<3 ||
       !/^[a-zA-Z]:/.test(payload.path) ||
