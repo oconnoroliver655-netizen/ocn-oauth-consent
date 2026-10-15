@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {BROWSER_OPERATIONS, validBrowserPayload} from './browser-operation-policy.mjs';
+import {BROWSER_OPERATIONS, validBrowserPayload} from '../browser-operation-policy.mjs';
 test('every declared browser tool has valid empty or typed args',()=>{
   for(const action of ['browser_connect','browser_status','browser_disconnect','browser_snapshot','browser_navigate_back','browser_tab_list'])
     assert.equal(validBrowserPayload(action,{}),true,action);
