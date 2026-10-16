@@ -6,6 +6,20 @@ const ciBackend = createCiBackend();
 // Authentication for each protected call remains in Supabase's signed ES256
 // token validator, not in client-supplied JSON or this publicly exposed host.
 import { createServer } from "node:http";
+const DIRECT_BROWSER_OPERATIONS = Object.freeze([
+  "browser_status","browser_connect","browser_tab_list","browser_snapshot"
+]);
+const DIRECT_BROWSER_TOOLS = DIRECT_BROWSER_OPERATIONS.map(name=>({
+  name,
+  description: "Owner-OAuth-bound browser operation. Queues execution exclusively in the existing limited interactive Windows Agent and returns command_id/nonce. Poll with poll_windows_operation; this does not establish Chrome connection by itself.",
+  inputSchema: {type:"object",properties:{},additionalProperties:false},
+  securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
+  annotations:{
+    readOnlyHint:name!=="browser_connect",
+    destructiveHint:false,
+    openWorldHint:false
+  }
+}));
 const PORT = Number(process.env.PORT || 10000);
 const ORIGIN = process.env.OCN_PUBLIC_ORIGIN || "";
 const VERSIONS = new Set(["2025-03-26","2025-06-18","2025-11-25","2026-07-28"]);
@@ -59,7 +73,7 @@ function toolList(oauthProbe=false){
     annotations:{readOnlyHint:name==="poll_machine_health",destructiveHint:false,openWorldHint:false}
   });
   // Reuse the already-installed OCN OAuth Probe plugin; no new ChatGPT plugin required.
-  if (oauthProbe) listed.push(...CI_TOOLS,...WINDOWS_TOOLS);
+  if (oauthProbe) listed.push(...CI_TOOLS,...WINDOWS_TOOLS,...DIRECT_BROWSER_TOOLS);
   return listed;
 }
 function ownerChallenge(){
@@ -218,6 +232,21 @@ async function handle(req,res){
     }));
     return respond(res,200,ok(id,{
       content:[{type:"text",text:result.error||"Device diagnostic unavailable"}],isError:true
+    }));
+  }
+  // Direct discoverable browser tools are narrow aliases of the same signed
+  // Windows queue operation. Never spawn or control Chrome in this public host.
+  // A receipt means only "queued", not a completed browser operation.
+  if (oauthProbePath && DIRECT_BROWSER_OPERATIONS.includes(tool)) {
+    const result=await callWindowsOperation(String(req.headers.authorization||""),
+      "submit_windows_operation",{operation:tool,payload:{}});
+    if(result.unauthorized)return respond(res,200,ok(id,ownerChallenge()));
+    if(result.value)return respond(res,200,ok(id,{
+      content:[{type:"text",text:JSON.stringify(result.value)}],
+      structuredContent:result.value,isError:false
+    }));
+    return respond(res,200,ok(id,{
+      content:[{type:"text",text:result.error||"Browser operation unavailable"}],isError:true
     }));
   }
   // Submit to the previously bound Windows Agent, with signed owner OAuth.
