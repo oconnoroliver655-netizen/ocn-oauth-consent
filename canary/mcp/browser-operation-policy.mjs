@@ -18,6 +18,16 @@ function validUrl(url) {
   if (typeof url !== 'string' || url.length < 8 || url.length > 8192) return false;
   try {
     const u = new URL(url);
+    // Owner-scoped explicit Chrome diagnostic/extension pages, never blanket internal access.
+    if (u.protocol === 'chrome:' || u.protocol === 'chrome-extension:') {
+      const allowed = new Set([
+        'chrome://version/',
+        'chrome://extensions/',
+        'chrome-extension://efaidnbmnnnibpcajpcglclefindmkaj/browser/js/options.html'
+      ]);
+      return !u.username && !u.password && !u.search && !u.hash &&
+        allowed.has(u.href);
+    }
     if (!['http:', 'https:'].includes(u.protocol) || !u.hostname ||
         u.username || u.password) return false;
     const host=u.hostname.toLowerCase();
