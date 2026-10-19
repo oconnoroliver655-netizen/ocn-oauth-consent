@@ -12,7 +12,7 @@ const USER="oliver";
 
 export const BROWSER_BATCH_TOOL={
   name:"browser_batch",
-  description:"Execute 1-12 owner-authorized official Playwright MCP browser_* steps together on the existing Chrome Profile 6, including browser_file_upload, file drag-and-drop, screenshots, PDF export (pdf capability), dialogs and tabs. Clicking a download link does not prove the file was saved; verify downloads separately. Uses the existing limited Windows user Agent. Returns a QUEUED command_id and nonce; poll_windows_operation for the actual result. No separate Chrome, SYSTEM or administrator access. Some code/network/storage tools require unsafe_approved=true. Uploading to a remote website may disclose selected files to that website.",
+  description:"Execute 1-12 owner-authorized official Playwright MCP browser_* steps together on the existing Chrome Profile 6, including browser_file_upload, file drag-and-drop, screenshots, PDF export (pdf capability), dialogs and tabs. For verified downloads, use browser_download_watch before browser_click, then browser_download_verify with filename, optional expected_sha256, and timeout_seconds; the local bridge checks actual new files in approved Downloads folders. Uses the existing limited Windows user Agent. Returns a QUEUED command_id and nonce; poll_windows_operation for the actual result. No separate Chrome, SYSTEM or administrator access. Some code/network/storage tools require unsafe_approved=true. Uploading to a remote website may disclose selected files to that website.",
   inputSchema:{
     type:"object",
     properties:{
