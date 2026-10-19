@@ -38,3 +38,19 @@ test("prevent malformed upload and prevent command substitution",()=>{
   const r=buildBrowserBatchRequest(adversarial,{id:"01234567-89ab-4cde-a234-0123456789ab"});
   assert.equal(r.payload.script.includes("Write-Host ATTACK"),false);
 });
+
+test("allow signed owner browser download watch, click and hash verification",()=>{
+  const req={steps:[
+    {tool:"browser_download_watch",arguments:{directory:"D:\\\\Downloads"}},
+    {tool:"browser_click",arguments:{target:"#download"}},
+    {tool:"browser_download_verify",arguments:{
+      directory:"D:\\\\Downloads",filename:"fixture.txt",
+      expected_sha256:"a".repeat(64),timeout_seconds:25,min_bytes:1
+    }}
+  ]};
+  assert.equal(validBrowserBatch(req),true);
+  const queued=buildBrowserBatchRequest(req,{id:"01234567-89ab-4cde-a234-0123456789ab"});
+  assert.equal(queued.payload.run_as,"oliver");
+  assert.equal(queued.payload.timeout_seconds,300);
+  assert.equal(queued.payload.script.includes("fixture.txt"),false);
+});
