@@ -11,7 +11,7 @@ test("approved upload batch encodes only Base64 and uses the limited user",()=>{
   const r=buildBrowserBatchRequest(base,{id:"01234567-89ab-4cde-a234-0123456789ab"});
   assert.equal(r.operation,"powershell");
   assert.equal(r.payload.run_as,"oliver");
-  assert.equal(r.payload.timeout_seconds,540);
+  assert.equal(r.payload.timeout_seconds,300);
   assert.equal(r.payload.script.includes("sample-upload.txt"),false);
   assert.equal(r.payload.script.includes("ocn_playwright_extended.py"),true);
   assert.equal(r.payload.script.includes("Remove-Item"),true);
