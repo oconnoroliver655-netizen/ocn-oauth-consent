@@ -54,3 +54,19 @@ test("allow signed owner browser download watch, click and hash verification",()
   assert.equal(queued.payload.timeout_seconds,300);
   assert.equal(queued.payload.script.includes("fixture.txt"),false);
 });
+
+test("accept detached background download watcher and durable status without unsafe mode",()=>{
+  const start={steps:[
+    {tool:"browser_download_watch_async",arguments:{
+      directory:"D:\\\\Downloads",filename:"large-archive.zip",
+      timeout_seconds:21600,min_bytes:1
+    }},
+    {tool:"browser_click",arguments:{target:"#download"}}
+  ]};
+  const check={steps:[{tool:"browser_download_status_async",arguments:{
+    job_id:"0".repeat(32)}}]};
+  assert.equal(validBrowserBatch(start),true);
+  assert.equal(validBrowserBatch(check),true);
+  assert.equal(buildBrowserBatchRequest(start,{id:"01234567-89ab-4cde-a234-0123456789ab"}).payload.run_as,"oliver");
+  assert.equal(buildBrowserBatchRequest(check,{id:"01234567-89ab-4cde-a234-0123456789ab"}).payload.timeout_seconds,220);
+});
