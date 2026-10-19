@@ -76,6 +76,6 @@ export function buildBrowserBatchRequest(args,{id=randomUUID()}={}){
   ].join(";\n");
   // One queue item; the existing user Agent retains claim, outbox and replay protections.
   return {operation:"powershell",payload:{
-    run_as:USER,script,timeout_seconds:540,cwd:TARGET_DIR
+    run_as:USER,script,timeout_seconds:Math.min(480,180+40*args.steps.length),cwd:TARGET_DIR
   }};
 }
