@@ -73,7 +73,14 @@ test("OAuth test route advertises protected probe and returns MCP tool-level cha
     body:JSON.stringify({jsonrpc:"2.0",id:1,method:"tools/list",params:{}})});
   assert.equal(listing.status,200);
   const list=(await listing.json()).result.tools;
-  assert.deepEqual(list.map(t=>t.name),["ping","owner_auth_probe","submit_machine_health","poll_machine_health","inspect_pr529_ci","cancel_stale_pr529_ci","submit_windows_operation","poll_windows_operation"]);
+  const baseTools=["ping","owner_auth_probe","submit_machine_health","poll_machine_health","inspect_pr529_ci","cancel_stale_pr529_ci","submit_windows_operation","poll_windows_operation"];
+  assert.deepEqual(list.slice(0,baseTools.length).map(t=>t.name),baseTools);
+  const names=new Set(list.map(t=>t.name));
+  for(const required of ["browser_status","browser_connect","browser_tab_list","browser_snapshot","browser_batch",
+    "rea_status","rea_list_tools","rea_describe_tool","rea_submit_tool","rea_poll",
+    "rea_chunk","rea_cancel","rea_list_prompts","rea_get_prompt"]){
+    assert.ok(names.has(required),"Missing registered MCP tool: "+required);
+  }
   assert.deepEqual(list.slice(2,4).map(t=>t.annotations.destructiveHint),[false,false]);
   assert.equal(list[4].annotations.readOnlyHint,true);
   assert.equal(list[5].annotations.destructiveHint,true);
