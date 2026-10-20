@@ -1,6 +1,7 @@
 import {makeHandler, createBackend as createCiBackend, TOOLS as CI_TOOLS} from "./pr529-ci-guard.mjs";
 import {WINDOWS_TOOLS,validWindowsCall,callWindowsOperation} from "./windows-tools.mjs";
 import {BROWSER_BATCH_TOOL,validBrowserBatch,buildBrowserBatchRequest} from "./browser-batch.mjs";
+import {REA_TOOLS,validReaCall,callReaTool} from "./rea-tools.mjs";
 const ciBackend = createCiBackend();
 // Owner OAuth MCP endpoint: public ping and owner-bound Windows operations.
 // Authentication remains in the signed Supabase OAuth validator.
@@ -74,7 +75,7 @@ function toolList(oauthProbe=false){
     annotations:{readOnlyHint:name==="poll_machine_health",destructiveHint:false,openWorldHint:false}
   });
   // Reuse the already-installed OCN OAuth Probe plugin; no new ChatGPT plugin required.
-  if (oauthProbe) listed.push(...CI_TOOLS,...WINDOWS_TOOLS,...DIRECT_BROWSER_TOOLS,BROWSER_BATCH_TOOL);
+  if (oauthProbe) listed.push(...CI_TOOLS,...WINDOWS_TOOLS,...DIRECT_BROWSER_TOOLS,BROWSER_BATCH_TOOL,...REA_TOOLS);
   return listed;
 }
 function ownerChallenge(){
@@ -186,7 +187,8 @@ async function handle(req,res){
         args.max_cancellations<=25)) :
     (oauthProbePath && (tool==="submit_windows_operation" || tool==="poll_windows_operation")) ?
       validWindowsCall(tool,args) :
-    (oauthProbePath && tool==="browser_batch") ? validBrowserBatch(args) : exactEmpty;
+    (oauthProbePath && tool==="browser_batch") ? validBrowserBatch(args) :
+    (oauthProbePath && typeof tool==="string" && tool.startsWith("rea_")) ? validReaCall(tool,args) : exactEmpty;
   if (!validCall)
     return respond(res,200,ok(id,{content:[{type:"text",text:"Invalid tool arguments"}],isError:true}));
   if (message.params.name==="ping")
@@ -264,6 +266,19 @@ async function handle(req,res){
     }));
     return respond(res,200,ok(id,{
       content:[{type:"text",text:result.error||"Browser batch unavailable"}],isError:true
+    }));
+  }
+  // REA is dispatched only through existing Supabase-verified owner OAuth and
+  // the limited Windows Agent. No Render-side REA process, file access or secret.
+  if (oauthProbePath && REA_TOOLS.some(x=>x.name===tool)) {
+    const result=await callReaTool(String(req.headers.authorization||""),tool,args);
+    if(result.unauthorized)return respond(res,200,ok(id,ownerChallenge()));
+    if(result.value)return respond(res,200,ok(id,{
+      content:[{type:"text",text:JSON.stringify(result.value)}],
+      structuredContent:result.value,isError:false
+    }));
+    return respond(res,200,ok(id,{
+      content:[{type:"text",text:result.error||"REA dispatch unavailable"}],isError:true
     }));
   }
   // Submit to the previously bound Windows Agent, with signed owner OAuth.

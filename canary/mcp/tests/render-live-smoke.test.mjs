@@ -71,11 +71,18 @@ test("separate OAuth test path advertises protected tool and always challenges",
   const tools=(await scan.json()).result.tools;
   assert.deepEqual(tools.slice(0,4).map(t=>t.name),["ping","owner_auth_probe","submit_machine_health","poll_machine_health"]);
   // Production now MUST list both CI Guard tools on the already-installed OAuth route.
-  assert.deepEqual(tools.map(t=>t.name),[
+  const legacy=[
     "ping","owner_auth_probe","submit_machine_health","poll_machine_health",
     "inspect_pr529_ci","cancel_stale_pr529_ci",
-    "submit_windows_operation","poll_windows_operation"
-  ]);
+    "submit_windows_operation","poll_windows_operation",
+    "browser_status","browser_connect","browser_tab_list","browser_snapshot","browser_batch"
+  ];
+  assert.deepEqual(tools.slice(0,legacy.length).map(t=>t.name),legacy);
+  const expectedRea=["rea_status","rea_list_tools","rea_describe_tool","rea_submit_tool",
+    "rea_poll","rea_chunk","rea_cancel","rea_list_prompts","rea_get_prompt"];
+  const extra=tools.slice(legacy.length).map(t=>t.name);
+  assert.ok(extra.every(x=>expectedRea.includes(x)));
+  if(process.env.OCN_REQUIRE_REA==="1")assert.deepEqual(extra,expectedRea);
   assert.equal(tools[4].annotations.readOnlyHint,true);
   assert.equal(tools[5].annotations.destructiveHint,true);
   assert.equal(tools[6].annotations.destructiveHint,true);
