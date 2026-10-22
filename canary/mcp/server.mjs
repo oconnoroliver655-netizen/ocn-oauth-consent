@@ -1,5 +1,6 @@
 import {makeHandler, createBackend as createCiBackend, TOOLS as CI_TOOLS} from "./pr529-ci-guard.mjs";
 import {WINDOWS_TOOLS,validWindowsCall,callWindowsOperation,ADMIN_POWERSHELL_TOOL,validAdminPowerShellCall,adminPowerShellToWindowsCall} from "./windows-tools.mjs";
+import {ROUTED_WINDOWS_TOOL,validRoutedCall,prepareRoutedWindowsRequest} from "./router-mcp.mjs";
 import {BROWSER_BATCH_TOOL,validBrowserBatch,buildBrowserBatchRequest} from "./browser-batch.mjs";
 import {REA_TOOLS,validReaCall,callReaTool} from "./rea-tools.mjs";
 const ciBackend = createCiBackend();
@@ -75,7 +76,7 @@ function toolList(oauthProbe=false){
     annotations:{readOnlyHint:name==="poll_machine_health",destructiveHint:false,openWorldHint:false}
   });
   // Reuse the already-installed OCN OAuth Probe plugin; no new ChatGPT plugin required.
-  if (oauthProbe) listed.push(...CI_TOOLS,...WINDOWS_TOOLS,...DIRECT_BROWSER_TOOLS,BROWSER_BATCH_TOOL,...REA_TOOLS,ADMIN_POWERSHELL_TOOL);
+  if (oauthProbe) listed.push(...CI_TOOLS,...WINDOWS_TOOLS,...DIRECT_BROWSER_TOOLS,BROWSER_BATCH_TOOL,...REA_TOOLS,ADMIN_POWERSHELL_TOOL,ROUTED_WINDOWS_TOOL);
   return listed;
 }
 function ownerChallenge(){
@@ -187,6 +188,7 @@ async function handle(req,res){
         args.max_cancellations<=25)) :
     (oauthProbePath && (tool==="submit_windows_operation" || tool==="poll_windows_operation")) ?
       validWindowsCall(tool,args) :
+    (oauthProbePath && tool==="submit_routed_windows_operation") ? validRoutedCall(args) :
     (oauthProbePath && tool==="submit_admin_powershell") ? validAdminPowerShellCall(args) :
     (oauthProbePath && tool==="browser_batch") ? validBrowserBatch(args) :
     (oauthProbePath && typeof tool==="string" && tool.startsWith("rea_")) ? validReaCall(tool,args) : exactEmpty;
@@ -295,6 +297,29 @@ async function handle(req,res){
     }));
     return respond(res,200,ok(id,{
       content:[{type:"text",text:result.error||"Cloud Admin PowerShell unavailable"}],isError:true
+    }));
+  }
+  // Deterministic routing into the existing signed owner-bound Windows queue.
+  // This selects an execution plane; local service authorization stays intact.
+  if(oauthProbePath && tool==="submit_routed_windows_operation"){
+    const p=prepareRoutedWindowsRequest(args);
+    if(!p.ok)return respond(res,200,ok(id,{
+      content:[{type:"text",text:p.error}],isError:true
+    }));
+    const target={operation:p.operation,payload:p.payload};
+    if(!validWindowsCall("submit_windows_operation",target))
+      return respond(res,200,ok(id,{
+        content:[{type:"text",text:"Unsupported or invalid routed Windows operation"}],isError:true
+      }));
+    const result=await callWindowsOperation(String(req.headers.authorization||""),
+      "submit_windows_operation",target);
+    if(result.unauthorized)return respond(res,200,ok(id,ownerChallenge()));
+    if(result.value)return respond(res,200,ok(id,{
+      content:[{type:"text",text:JSON.stringify(result.value)}],
+      structuredContent:result.value,isError:false
+    }));
+    return respond(res,200,ok(id,{
+      content:[{type:"text",text:result.error||"Routed operation unavailable"}],isError:true
     }));
   }
   // Submit to the previously bound Windows Agent, with signed owner OAuth.

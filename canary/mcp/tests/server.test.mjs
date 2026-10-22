@@ -78,7 +78,7 @@ test("OAuth test route advertises protected probe and returns MCP tool-level cha
   const names=new Set(list.map(t=>t.name));
   for(const required of ["browser_status","browser_connect","browser_tab_list","browser_snapshot","browser_batch",
     "rea_status","rea_list_tools","rea_describe_tool","rea_submit_tool","rea_poll",
-    "rea_chunk","rea_cancel","rea_list_prompts","rea_get_prompt","submit_admin_powershell"]){
+    "rea_chunk","rea_cancel","rea_list_prompts","rea_get_prompt","submit_admin_powershell","submit_routed_windows_operation"]){
     assert.ok(names.has(required),"Missing registered MCP tool: "+required);
   }
   assert.deepEqual(list.slice(2,4).map(t=>t.annotations.destructiveHint),[false,false]);
@@ -107,6 +107,7 @@ test("health-only tools require signed owner and never expose file/shell",async(
     ["cancel_stale_pr529_ci",{}],
     ["submit_windows_operation",{operation:"desktop_health",payload:{}}],
     ["submit_admin_powershell",{script:"whoami /user"}],
+    ["submit_routed_windows_operation",{operation:"powershell",payload:{script:"whoami"},intent:"system_maintenance"}],
     ["poll_windows_operation",{command_id:1,nonce:"a".repeat(32)}]
   ]){
     const r=await httpFetch(base+"/mcp-oauth",{method:"POST",headers:headers(),
@@ -124,6 +125,7 @@ test("health-only tools require signed owner and never expose file/shell",async(
     {name:"inspect_pr529_ci",arguments:{repo:"other"}},
     {name:"submit_windows_operation",arguments:{operation:"arbitrary_code",payload:{}}},
     {name:"submit_admin_powershell",arguments:{script:"whoami",run_as:"system"}},
+    {name:"submit_routed_windows_operation",arguments:{operation:"unknown",payload:{}}},
     {name:"poll_windows_operation",arguments:{command_id:1,nonce:"wrong"}},
     {name:"submit_file_write",arguments:{}}
   ]){
