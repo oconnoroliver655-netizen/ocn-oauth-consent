@@ -82,7 +82,8 @@ test("separate OAuth test path advertises protected tool and always challenges",
     "rea_poll","rea_chunk","rea_cancel","rea_list_prompts","rea_get_prompt"];
   const extra=tools.slice(legacy.length).map(t=>t.name);
   assert.equal(extra.filter(x=>x==="submit_admin_powershell").length,1);
-  const reaExtras=extra.filter(x=>x!=="submit_admin_powershell");
+  assert.equal(extra.filter(x=>x==="submit_routed_windows_operation").length,1);
+  const reaExtras=extra.filter(x=>x!=="submit_admin_powershell" && x!=="submit_routed_windows_operation");
   assert.ok(reaExtras.every(x=>expectedRea.includes(x)));
   if(process.env.OCN_REQUIRE_REA==="1")assert.deepEqual(reaExtras,expectedRea);
   assert.equal(tools[4].annotations.readOnlyHint,true);
@@ -123,6 +124,7 @@ test("new Windows tools require real owner OAuth before any queue action",{timeo
   for(const [name,args] of [
     ["submit_windows_operation",{operation:"desktop_health",payload:{}}],
     ["submit_admin_powershell",{script:"whoami"}],
+    ["submit_routed_windows_operation",{operation:"powershell",payload:{script:"whoami"},intent:"system_maintenance"}],
     ["poll_windows_operation",{command_id:1,nonce:"a".repeat(32)}]
   ]){
     const response=await fetch(base+"/mcp-oauth",{method:"POST",headers:options,
