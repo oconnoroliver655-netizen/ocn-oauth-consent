@@ -81,8 +81,10 @@ test("separate OAuth test path advertises protected tool and always challenges",
   const expectedRea=["rea_status","rea_list_tools","rea_describe_tool","rea_submit_tool",
     "rea_poll","rea_chunk","rea_cancel","rea_list_prompts","rea_get_prompt"];
   const extra=tools.slice(legacy.length).map(t=>t.name);
-  assert.ok(extra.every(x=>expectedRea.includes(x)));
-  if(process.env.OCN_REQUIRE_REA==="1")assert.deepEqual(extra,expectedRea);
+  assert.equal(extra.filter(x=>x==="submit_admin_powershell").length,1);
+  const reaExtras=extra.filter(x=>x!=="submit_admin_powershell");
+  assert.ok(reaExtras.every(x=>expectedRea.includes(x)));
+  if(process.env.OCN_REQUIRE_REA==="1")assert.deepEqual(reaExtras,expectedRea);
   assert.equal(tools[4].annotations.readOnlyHint,true);
   assert.equal(tools[5].annotations.destructiveHint,true);
   assert.equal(tools[6].annotations.destructiveHint,true);
@@ -120,6 +122,7 @@ test("unauthenticated CI Guard calls challenge instead of accessing GitHub",{tim
 test("new Windows tools require real owner OAuth before any queue action",{timeout:50000},async()=>{
   for(const [name,args] of [
     ["submit_windows_operation",{operation:"desktop_health",payload:{}}],
+    ["submit_admin_powershell",{script:"whoami"}],
     ["poll_windows_operation",{command_id:1,nonce:"a".repeat(32)}]
   ]){
     const response=await fetch(base+"/mcp-oauth",{method:"POST",headers:options,

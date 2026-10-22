@@ -13,7 +13,7 @@ const OPERATIONS=[
 export const WINDOWS_TOOLS=[
   {
     name:"submit_windows_operation",
-    description:"Run an owner-authorized operation on the user's existing Windows Agent, including typed browser commands in the existing Chrome profile. Returns a queued command_id and nonce; use poll_windows_operation to obtain the result. Examples: file_read_lines payload {path:'D:\\\\ChatGPT-Local-Bridge\\\\AGENTS.md',offset:0,length:20}; powershell payload {script:'Get-Location',timeout_seconds:30}; window_list payload {}. Same existing device, no new local installation.",
+    description:"Run an owner-authorized Windows operation. IMPORTANT execution routing: noninteractive administrator/SYSTEM maintenance uses operation='powershell' and payload {run_as:'system',script:'...',timeout_seconds:30}; ordinary user scripts use run_as:'oliver' (the default). exec/process_start/terminal_start require explicit run_as:'system'. GUI/browser actions MUST stay in the limited interactive Desktop Agent, WITHOUT run_as. For simpler privileged scripts prefer the separate submit_admin_powershell tool. This is queued; poll_windows_operation with command_id and nonce for actual outcome. Never misreport 'queued' as completed.",
     inputSchema:{type:"object",properties:{
       operation:{type:"string",enum:OPERATIONS},
       payload:{type:"object",additionalProperties:true}
@@ -69,4 +69,36 @@ export async function callWindowsOperation(bearer,tool,args){
       return {error:"Invalid Windows result receipt"};
     return {value:response};
   }catch{return {error:"Windows execution service unavailable"};}
+}
+
+// Discoverable alias for the existing owner-bound SYSTEM execution plane.
+// It adds no elevated capability: the generic submit_windows_operation already
+// supports this exact run_as value. Authentication and queue policy are unchanged.
+export const ADMIN_POWERSHELL_TOOL={
+  name:"submit_admin_powershell",
+  description:"Run a noninteractive Windows PowerShell maintenance script as NT AUTHORITY\\SYSTEM via the existing Cloud Admin Agent. Use for Windows services, protected paths, scheduled tasks, and machine configuration. NOT for Chrome, windows, mouse, Flutter, GUI, or UAC secure desktop: use the Desktop Agent for interactive steps. Requires signed owner OAuth and existing local authorization policy. Returns only queued command_id and nonce; poll_windows_operation to get final status. Destructive or sensitive system changes still require appropriate authorization.",
+  inputSchema:{type:"object",properties:{
+    script:{type:"string",minLength:1,maxLength:131072},
+    timeout_seconds:{type:"integer",minimum:1,maximum:1800},
+    cwd:{type:"string",minLength:1,maxLength:4096}
+  },required:["script"],additionalProperties:false},
+  securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
+  annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}
+};
+export function validAdminPowerShellCall(args){
+  if(!args||typeof args!=="object"||Array.isArray(args))return false;
+  const keys=Object.keys(args);
+  if(keys.some(k=>!["script","timeout_seconds","cwd"].includes(k)))return false;
+  if(typeof args.script!=="string"||!args.script.trim()||args.script.length>131072)return false;
+  if("timeout_seconds" in args && (!Number.isInteger(args.timeout_seconds)||
+      args.timeout_seconds<1||args.timeout_seconds>1800))return false;
+  if("cwd" in args && (typeof args.cwd!=="string"||!args.cwd||args.cwd.length>4096))return false;
+  return true;
+}
+export function adminPowerShellToWindowsCall(args){
+  if(!validAdminPowerShellCall(args))throw new TypeError("Invalid admin PowerShell arguments");
+  const payload={script:args.script,run_as:"system"};
+  if(args.timeout_seconds!==undefined)payload.timeout_seconds=args.timeout_seconds;
+  if(args.cwd!==undefined)payload.cwd=args.cwd;
+  return {operation:"powershell",payload};
 }

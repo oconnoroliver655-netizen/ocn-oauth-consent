@@ -1,5 +1,5 @@
 import {makeHandler, createBackend as createCiBackend, TOOLS as CI_TOOLS} from "./pr529-ci-guard.mjs";
-import {WINDOWS_TOOLS,validWindowsCall,callWindowsOperation} from "./windows-tools.mjs";
+import {WINDOWS_TOOLS,validWindowsCall,callWindowsOperation,ADMIN_POWERSHELL_TOOL,validAdminPowerShellCall,adminPowerShellToWindowsCall} from "./windows-tools.mjs";
 import {BROWSER_BATCH_TOOL,validBrowserBatch,buildBrowserBatchRequest} from "./browser-batch.mjs";
 import {REA_TOOLS,validReaCall,callReaTool} from "./rea-tools.mjs";
 const ciBackend = createCiBackend();
@@ -75,7 +75,7 @@ function toolList(oauthProbe=false){
     annotations:{readOnlyHint:name==="poll_machine_health",destructiveHint:false,openWorldHint:false}
   });
   // Reuse the already-installed OCN OAuth Probe plugin; no new ChatGPT plugin required.
-  if (oauthProbe) listed.push(...CI_TOOLS,...WINDOWS_TOOLS,...DIRECT_BROWSER_TOOLS,BROWSER_BATCH_TOOL,...REA_TOOLS);
+  if (oauthProbe) listed.push(...CI_TOOLS,...WINDOWS_TOOLS,...DIRECT_BROWSER_TOOLS,BROWSER_BATCH_TOOL,...REA_TOOLS,ADMIN_POWERSHELL_TOOL);
   return listed;
 }
 function ownerChallenge(){
@@ -187,6 +187,7 @@ async function handle(req,res){
         args.max_cancellations<=25)) :
     (oauthProbePath && (tool==="submit_windows_operation" || tool==="poll_windows_operation")) ?
       validWindowsCall(tool,args) :
+    (oauthProbePath && tool==="submit_admin_powershell") ? validAdminPowerShellCall(args) :
     (oauthProbePath && tool==="browser_batch") ? validBrowserBatch(args) :
     (oauthProbePath && typeof tool==="string" && tool.startsWith("rea_")) ? validReaCall(tool,args) : exactEmpty;
   if (!validCall)
@@ -279,6 +280,21 @@ async function handle(req,res){
     }));
     return respond(res,200,ok(id,{
       content:[{type:"text",text:result.error||"REA dispatch unavailable"}],isError:true
+    }));
+  }
+  // Discoverable Cloud Admin route. Translate strict inputs into the SAME signed
+  // owner/device-bound Windows operation used by the legacy generic tool.
+  if(oauthProbePath && tool==="submit_admin_powershell"){
+    const prepared=adminPowerShellToWindowsCall(args);
+    const result=await callWindowsOperation(String(req.headers.authorization||""),
+      "submit_windows_operation",prepared);
+    if(result.unauthorized)return respond(res,200,ok(id,ownerChallenge()));
+    if(result.value)return respond(res,200,ok(id,{
+      content:[{type:"text",text:JSON.stringify(result.value)}],
+      structuredContent:result.value,isError:false
+    }));
+    return respond(res,200,ok(id,{
+      content:[{type:"text",text:result.error||"Cloud Admin PowerShell unavailable"}],isError:true
     }));
   }
   // Submit to the previously bound Windows Agent, with signed owner OAuth.
