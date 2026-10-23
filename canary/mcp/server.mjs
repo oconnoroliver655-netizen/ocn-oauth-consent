@@ -28,6 +28,28 @@ const PORT = Number(process.env.PORT || 10000);
 const ORIGIN = process.env.OCN_PUBLIC_ORIGIN || "";
 // Explicit browser origins only; OAuth bearer and owner checks are unchanged.
 const TRUSTED_BROWSER_ORIGINS = new Set(["https://chatgpt.com","https://chat.openai.com"]);
+// Bounded rejection telemetry only; never log Authorization, cookies, or request bodies.
+let originAuditWindow = 0;
+let originAuditCount = 0;
+function auditRejectedBrowserOrigin(req) {
+  const now = Date.now();
+  if (now - originAuditWindow >= 60_000) { originAuditWindow = now; originAuditCount = 0; }
+  if (originAuditCount++ >= 12) return;
+  const raw = String(req.headers.origin ?? "");
+  let safeOrigin = raw === "null" ? "null" : "noncanonical";
+  try {
+    const u = new URL(raw);
+    if (raw.length <= 160 && u.origin === raw &&
+        (u.protocol === "https:" || u.protocol === "http:") &&
+        /^[a-z0-9.-]{1,120}$/i.test(u.hostname)) safeOrigin = raw;
+  } catch { /* preserve noncanonical classification */ }
+  console.warn(JSON.stringify({
+    event:"ocn_origin_forbidden",
+    route:req.url === "/mcp-oauth" ? "mcp-oauth" : "other",
+    origin:safeOrigin,
+    reason:req.url === "/mcp-ci-guard" ? "privileged_route_disallows_browser_origin" : "origin_not_allowlisted"
+  }));
+}
 const VERSIONS = new Set(["2025-03-26","2025-06-18","2025-11-25","2026-07-28"]);
 const ISSUER = "https://ouxniljtjxnrkwakkvbv.supabase.co/auth/v1";
 // No application-layer fixed JSON body byte limit. Transport/runtime capacity still applies.
@@ -128,8 +150,10 @@ async function handle(req,res){
   if (req.headers.host!==new URL(ORIGIN).host)
     return respond(res,421,{error:"Unrecognized Host"});
   if (req.headers.origin!==undefined){
-    if (!TRUSTED_BROWSER_ORIGINS.has(req.headers.origin) || req.url==="/mcp-ci-guard")
+    if (!TRUSTED_BROWSER_ORIGINS.has(req.headers.origin) || req.url==="/mcp-ci-guard") {
+      auditRejectedBrowserOrigin(req);
       return respond(res,403,{error:"Untrusted browser origin"});
+    }
     res._ocnTrustedBrowserOrigin=req.headers.origin;
   }
   // Preflight only for OAuth discovery and MCP routes, never privileged bypasses.
