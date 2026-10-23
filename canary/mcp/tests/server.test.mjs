@@ -140,6 +140,26 @@ test("origin and host constraints deny unsolicited callers",async()=>{
     assert.ok([403,421].includes(r.status));
   }
 });
+test("exact ChatGPT browser origins can discover metadata without changing OAuth enforcement",async()=>{
+  for (const origin of ["https://chatgpt.com","https://chat.openai.com"]){
+    const metadata=await httpFetch(base+"/.well-known/oauth-protected-resource",{
+      headers:{host:new URL(ORIGIN).host,origin}
+    });
+    assert.equal(metadata.status,200);
+    assert.equal(metadata.headers.get("access-control-allow-origin"),origin);
+    const list=await httpFetch(base+"/mcp-oauth",{method:"POST",headers:headers({origin}),
+      body:JSON.stringify({jsonrpc:"2.0",id:8,method:"tools/list",params:{}})});
+    assert.equal(list.status,200);
+    assert.equal(list.headers.get("access-control-allow-origin"),origin);
+    const preflight=await httpFetch(base+"/mcp-oauth",{method:"OPTIONS",headers:headers({origin,
+      "access-control-request-method":"POST",
+      "access-control-request-headers":"authorization,content-type"})});
+    assert.equal(preflight.status,204);
+    assert.equal(preflight.headers.get("access-control-allow-origin"),origin);
+  }
+  const denied=await httpFetch(base+"/mcp-ci-guard",{method:"POST",headers:headers({origin:"https://chatgpt.com"}),body:"{}"});
+  assert.equal(denied.status,403);
+});
 test("unknown tool never triggers any side effects",async()=>{
   const r=await rpc("tools/call",{name:"run_shell",arguments:{}});
   assert.equal(r.status,200);
