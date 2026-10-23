@@ -25,6 +25,8 @@ const DIRECT_BROWSER_TOOLS = DIRECT_BROWSER_OPERATIONS.map(name=>({
 }));
 const PORT = Number(process.env.PORT || 10000);
 const ORIGIN = process.env.OCN_PUBLIC_ORIGIN || "";
+// Explicit browser origins only; OAuth bearer and owner checks are unchanged.
+const TRUSTED_BROWSER_ORIGINS = new Set(["https://chatgpt.com","https://chat.openai.com"]);
 const VERSIONS = new Set(["2025-03-26","2025-06-18","2025-11-25","2026-07-28"]);
 const ISSUER = "https://ouxniljtjxnrkwakkvbv.supabase.co/auth/v1";
 // No application-layer fixed JSON body byte limit. Transport/runtime capacity still applies.
@@ -42,6 +44,10 @@ function respond(res,status,value,extra={}) {
     "cache-control":"no-store",
     "x-content-type-options":"nosniff",
     "content-security-policy":"default-src 'none'",
+    ...(res._ocnTrustedBrowserOrigin ? {
+      "access-control-allow-origin":res._ocnTrustedBrowserOrigin,
+      "vary":"Origin"
+    } : {}),
     ...(value===null?{}:{"content-type":"application/json; charset=utf-8"}),
     ...extra,
   });
@@ -120,8 +126,21 @@ async function handle(req,res){
   if (!meta) return respond(res,503,{error:"Pinned HTTPS resource missing"});
   if (req.headers.host!==new URL(ORIGIN).host)
     return respond(res,421,{error:"Unrecognized Host"});
-  if (req.headers.origin!==undefined)
-    return respond(res,403,{error:"Browser origins disabled"});
+  if (req.headers.origin!==undefined){
+    if (!TRUSTED_BROWSER_ORIGINS.has(req.headers.origin) || req.url==="/mcp-ci-guard")
+      return respond(res,403,{error:"Untrusted browser origin"});
+    res._ocnTrustedBrowserOrigin=req.headers.origin;
+  }
+  // Preflight only for OAuth discovery and MCP routes, never privileged bypasses.
+  if (req.method==="OPTIONS" && res._ocnTrustedBrowserOrigin){
+    if (!["/.well-known/oauth-protected-resource","/mcp","/mcp-oauth"].includes(req.url))
+      return respond(res,405,{error:"Unsupported preflight path"});
+    return respond(res,204,null,{
+      "access-control-allow-methods":"GET, POST, OPTIONS",
+      "access-control-allow-headers":"authorization, content-type, accept, mcp-protocol-version",
+      "access-control-max-age":"300"
+    });
+  }
   if (req.url==="/.well-known/oauth-protected-resource")
     return req.method==="GET" ? respond(res,200,meta) : respond(res,405,{error:"Method not allowed"});
   // PR529 guard has an independent, owner-OAuth-bound entrypoint.
