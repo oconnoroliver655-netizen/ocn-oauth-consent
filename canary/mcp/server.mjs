@@ -3,6 +3,7 @@ import {WINDOWS_TOOLS,validWindowsCall,callWindowsOperation,ADMIN_POWERSHELL_TOO
 import {ROUTED_WINDOWS_TOOL,validRoutedCall,prepareRoutedWindowsRequest} from "./router-mcp.mjs";
 import {BROWSER_BATCH_TOOL,validBrowserBatch,buildBrowserBatchRequest} from "./browser-batch.mjs";
 import {REA_TOOLS,validReaCall,callReaTool} from "./rea-tools.mjs";
+import {MEMORY_TOOLS,validMemoryCall,callMemoryTool} from "./memory-tools.mjs";
 const ciBackend = createCiBackend();
 // Owner OAuth MCP endpoint: public ping and owner-bound Windows operations.
 // Authentication remains in the signed Supabase OAuth validator.
@@ -82,7 +83,7 @@ function toolList(oauthProbe=false){
     annotations:{readOnlyHint:name==="poll_machine_health",destructiveHint:false,openWorldHint:false}
   });
   // Reuse the already-installed OCN OAuth Probe plugin; no new ChatGPT plugin required.
-  if (oauthProbe) listed.push(...CI_TOOLS,...WINDOWS_TOOLS,...DIRECT_BROWSER_TOOLS,BROWSER_BATCH_TOOL,...REA_TOOLS,ADMIN_POWERSHELL_TOOL,ROUTED_WINDOWS_TOOL);
+  if (oauthProbe) listed.push(...CI_TOOLS,...WINDOWS_TOOLS,...DIRECT_BROWSER_TOOLS,BROWSER_BATCH_TOOL,...REA_TOOLS,...MEMORY_TOOLS,ADMIN_POWERSHELL_TOOL,ROUTED_WINDOWS_TOOL);
   return listed;
 }
 function ownerChallenge(){
@@ -210,7 +211,8 @@ async function handle(req,res){
     (oauthProbePath && tool==="submit_routed_windows_operation") ? validRoutedCall(args) :
     (oauthProbePath && tool==="submit_admin_powershell") ? validAdminPowerShellCall(args) :
     (oauthProbePath && tool==="browser_batch") ? validBrowserBatch(args) :
-    (oauthProbePath && typeof tool==="string" && tool.startsWith("rea_")) ? validReaCall(tool,args) : exactEmpty;
+    (oauthProbePath && typeof tool==="string" && tool.startsWith("rea_")) ? validReaCall(tool,args) :
+    (oauthProbePath && typeof tool==="string" && tool.startsWith("memory_")) ? validMemoryCall(tool,args) : exactEmpty;
   if (!validCall)
     return respond(res,200,ok(id,{content:[{type:"text",text:"Invalid tool arguments"}],isError:true}));
   if (message.params.name==="ping")
@@ -288,6 +290,19 @@ async function handle(req,res){
     }));
     return respond(res,200,ok(id,{
       content:[{type:"text",text:result.error||"Browser batch unavailable"}],isError:true
+    }));
+  }
+  // Native memory tool names reuse the EXISTING owner-OAuth and Windows queue.
+  // These return queued command IDs, never assert the memory result is complete.
+  if (oauthProbePath && MEMORY_TOOLS.some(x=>x.name===tool)) {
+    const result=await callMemoryTool(String(req.headers.authorization||""),tool,args);
+    if(result.unauthorized)return respond(res,200,ok(id,ownerChallenge()));
+    if(result.value)return respond(res,200,ok(id,{
+      content:[{type:"text",text:JSON.stringify(result.value)}],
+      structuredContent:result.value,isError:false
+    }));
+    return respond(res,200,ok(id,{
+      content:[{type:"text",text:result.error||"Local memory operation unavailable"}],isError:true
     }));
   }
   // REA is dispatched only through existing Supabase-verified owner OAuth and
