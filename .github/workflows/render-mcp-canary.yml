@@ -30,7 +30,9 @@ jobs:
           node --check canary/mcp/router-mcp.mjs
           node --check canary/mcp/tests/route-policy.test.mjs
           node --check canary/mcp/tests/router-mcp.test.mjs
-          node --test canary/mcp/tests/server.test.mjs canary/mcp/tests/admin-power-routing.test.mjs canary/mcp/tests/route-policy.test.mjs canary/mcp/tests/router-mcp.test.mjs
+          node --check supabase/functions/ocn-owner-health-dispatch/queue-pressure.mjs
+          node --check tests/queue-pressure-edge.test.mjs
+          node --test canary/mcp/tests/server.test.mjs canary/mcp/tests/admin-power-routing.test.mjs canary/mcp/tests/route-policy.test.mjs canary/mcp/tests/router-mcp.test.mjs tests/queue-pressure-edge.test.mjs
       - name: No privileged dependencies or credentials
         run: |
           if grep -REn '(sb_secret_[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{20,}|eyJ[A-Za-z0-9_-]{60,})' canary/mcp; then exit 1; fi
