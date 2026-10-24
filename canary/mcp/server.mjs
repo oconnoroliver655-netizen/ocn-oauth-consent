@@ -54,6 +54,13 @@ const VERSIONS = new Set(["2025-03-26","2025-06-18","2025-11-25","2026-07-28"]);
 const ISSUER = "https://ouxniljtjxnrkwakkvbv.supabase.co/auth/v1";
 // No application-layer fixed JSON body byte limit. Transport/runtime capacity still applies.
 const HEALTH_EDGE = "https://ouxniljtjxnrkwakkvbv.supabase.co/functions/v1/ocn-owner-health-dispatch";
+const QUEUE_PRESSURE_TOOL = Object.freeze({
+  name:"queue_pressure_status",
+  description:"Read-only owner-OAuth queue pressure summary (no Windows task is submitted). Advisory: defer only optional duplicate diagnostics when congested; never block heartbeats, completion receipts or owner-authorized recovery.",
+  inputSchema:{type:"object",properties:{},additionalProperties:false},
+  securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
+  annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
+});
 function resource() {
   try {
     const u = new URL(ORIGIN);
@@ -105,7 +112,7 @@ function toolList(oauthProbe=false){
     annotations:{readOnlyHint:name==="poll_machine_health",destructiveHint:false,openWorldHint:false}
   });
   // Reuse the already-installed OCN OAuth Probe plugin; no new ChatGPT plugin required.
-  if (oauthProbe) listed.push(...CI_TOOLS,...WINDOWS_TOOLS,...DIRECT_BROWSER_TOOLS,BROWSER_BATCH_TOOL,...REA_TOOLS,...MEMORY_TOOLS,ADMIN_POWERSHELL_TOOL,ROUTED_WINDOWS_TOOL);
+  if (oauthProbe) listed.push(...CI_TOOLS,...WINDOWS_TOOLS,...DIRECT_BROWSER_TOOLS,BROWSER_BATCH_TOOL,...REA_TOOLS,...MEMORY_TOOLS,ADMIN_POWERSHELL_TOOL,ROUTED_WINDOWS_TOOL,QUEUE_PRESSURE_TOOL);
   return listed;
 }
 function ownerChallenge(){
@@ -141,6 +148,39 @@ async function callHealthEdge(bearer,action,args){
         typeof body.ready!=="boolean") return {error:"Invalid health status receipt"};
     return {value:{command_id:body.command_id,status:body.status,ready:body.ready}};
   }catch{return {error:"Device health diagnostic unavailable"};}
+}
+async function callQueuePressureEdge(bearer) {
+  if (!bearer.startsWith("Bearer ") || bearer.length>8200) return {unauthorized:true};
+  try {
+    const r = await fetch(HEALTH_EDGE,{
+      method:"POST",headers:{"content-type":"application/json","authorization":bearer},
+      body:JSON.stringify({action:"queue_pressure_status"}),
+      signal:AbortSignal.timeout(8500)
+    });
+    if(r.status===401)return {unauthorized:true};
+    if(r.status!==200)return {error:"Queue pressure telemetry unavailable"};
+    const x=await r.json();
+    if(x?.ok!==true || x.mutated_state!==false ||
+       typeof x.reason!=="string" ||
+       typeof x.advisory_admit_nonessential_diagnostics!=="boolean" ||
+       typeof x.active_queue_complete!=="boolean" ||
+       !x.counts || !["queued","claimed","running"].every(k=>
+         Number.isSafeInteger(x.counts[k]) && x.counts[k]>=0))
+      return {error:"Queue pressure telemetry invalid"};
+    // Keep responses to the exact metadata schema, independent of edge extensions.
+    return {value:{
+      ok:true,mutated_state:false,reason:x.reason.slice(0,80),
+      advisory_admit_nonessential_diagnostics:x.advisory_admit_nonessential_diagnostics,
+      heartbeat_age_s:Number.isInteger(x.heartbeat_age_s)?x.heartbeat_age_s:null,
+      agent_phase:typeof x.agent_phase==="string"?x.agent_phase.slice(0,64):null,
+      claims_enabled:typeof x.claims_enabled==="boolean"?x.claims_enabled:null,
+      active_queue_complete:x.active_queue_complete,
+      counts:{queued:x.counts.queued,claimed:x.counts.claimed,running:x.counts.running},
+      oldest_queued_age_s:Number.isInteger(x.oldest_queued_age_s)?x.oldest_queued_age_s:null,
+      oldest_claimed_age_s:Number.isInteger(x.oldest_claimed_age_s)?x.oldest_claimed_age_s:null,
+      near_expiry_queued:Number.isInteger(x.near_expiry_queued)?x.near_expiry_queued:0
+    }};
+  }catch{return {error:"Queue pressure telemetry unavailable"};}
 }
 async function handle(req,res){
   const meta=resource();
@@ -273,6 +313,18 @@ async function handle(req,res){
       content:[{type:"text",text:"Authentication required. No machine permissions."}],
       isError:true,
       _meta:{"mcp/www_authenticate":[challenge]}
+    }));
+  }
+  if (oauthProbePath && tool==="queue_pressure_status") {
+    const result=await callQueuePressureEdge(String(req.headers.authorization||""));
+    if(result.unauthorized)return respond(res,200,ok(id,ownerChallenge()));
+    if(result.value)return respond(res,200,ok(id,{
+      content:[{type:"text",text:JSON.stringify(result.value)}],
+      structuredContent:result.value,isError:false
+    }));
+    return respond(res,200,ok(id,{
+      content:[{type:"text",text:result.error||"Queue pressure telemetry unavailable"}],
+      isError:true
     }));
   }
   if (oauthProbePath && (tool==="submit_machine_health" || tool==="poll_machine_health")){
