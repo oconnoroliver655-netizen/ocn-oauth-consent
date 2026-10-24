@@ -5,7 +5,7 @@
 // which checks signed issuer/client/resource + active consent/session per call.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {BROWSER_OPERATIONS, validBrowserPayload} from "./browser-operation-policy.mjs";
-import {classifyQueuePressure} from "./queue-pressure.mjs";
+import {classifyQueuePressure,parseExactContentRange,activeQueueComplete} from "./queue-pressure.mjs";
 
 const SUPABASE = "https://ouxniljtjxnrkwakkvbv.supabase.co";
 const VALIDATOR = SUPABASE + "/functions/v1/ocn-oauth-validator";
@@ -65,17 +65,6 @@ async function getRows(query: URLSearchParams): Promise<any[]|null> {
   return Array.isArray(body) ? body : null;
 }
 
-// Exact PostgREST count must agree with returned metadata length.
-// A larger requested limit does NOT bypass Supabase's configured max_rows.
-export function parseExactContentRange(value: string|null): number|null {
-  if (typeof value !== "string") return null;
-  const parts=value.split("/");
-  const tail=parts.length===2 ? parts[1] : "";
-  if (!/^[0-9]+$/.test(tail)) return null;
-  const n=Number(tail);
-  return Number.isSafeInteger(n) && n>=0 ? n : null;
-}
-
 async function queuePressureStatus(): Promise<Response> {
   // Signed owner OAuth is checked before invoking this method.
   // Restrict metadata to the single bound Windows device and owner.
@@ -110,13 +99,11 @@ async function queuePressureStatus(): Promise<Response> {
     cmdRes.json().catch(()=>null),agentRes.json().catch(()=>null)
   ]);
   const count = parseExactContentRange(cmdRes.headers.get("content-range"));
-  if (!Array.isArray(active) || !Array.isArray(agents) ||
-      count===null || active.length>2000 || active.length>count)
+  const complete=activeQueueComplete(active,count,2000);
+  if (!Array.isArray(agents) || complete===null)
     return response(503,{ok:false,error:"Queue telemetry unavailable"});
-  // Only claim complete when the independently supplied exact total matches.
-  // This protects against max_rows truncation, partial responses, and
-  // inconclusive count headers, without querying or exposing command content.
-  const complete = count<=2000 && active.length===count;
+  // count=exact is independent of the API's max_rows truncation.
+  // A partial or over-limit response always produces complete=false.
   const result = classifyQueuePressure({
     observedAt:new Date().toISOString(),agents,
     commands:active,complete
