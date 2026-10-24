@@ -4,6 +4,7 @@ import {ROUTED_WINDOWS_TOOL,validRoutedCall,prepareRoutedWindowsRequest} from ".
 import {BROWSER_BATCH_TOOL,validBrowserBatch,buildBrowserBatchRequest} from "./browser-batch.mjs";
 import {REA_TOOLS,validReaCall,callReaTool} from "./rea-tools.mjs";
 import {MEMORY_TOOLS,validMemoryCall,callMemoryTool} from "./memory-tools.mjs";
+import {OPTIONAL_DIAGNOSTIC_TOOL,validOptionalDiagnosticCall,prepareOptionalDiagnostic,planOptionalDiagnosticAdmission} from "./optional-diagnostic-admission.mjs";
 const ciBackend = createCiBackend();
 // Owner OAuth MCP endpoint: public ping and owner-bound Windows operations.
 // Authentication remains in the signed Supabase OAuth validator.
@@ -112,7 +113,7 @@ function toolList(oauthProbe=false){
     annotations:{readOnlyHint:name==="poll_machine_health",destructiveHint:false,openWorldHint:false}
   });
   // Reuse the already-installed OCN OAuth Probe plugin; no new ChatGPT plugin required.
-  if (oauthProbe) listed.push(...CI_TOOLS,...WINDOWS_TOOLS,...DIRECT_BROWSER_TOOLS,BROWSER_BATCH_TOOL,...REA_TOOLS,...MEMORY_TOOLS,ADMIN_POWERSHELL_TOOL,ROUTED_WINDOWS_TOOL,QUEUE_PRESSURE_TOOL);
+  if (oauthProbe) listed.push(...CI_TOOLS,...WINDOWS_TOOLS,...DIRECT_BROWSER_TOOLS,BROWSER_BATCH_TOOL,...REA_TOOLS,...MEMORY_TOOLS,ADMIN_POWERSHELL_TOOL,ROUTED_WINDOWS_TOOL,QUEUE_PRESSURE_TOOL,OPTIONAL_DIAGNOSTIC_TOOL);
   return listed;
 }
 function ownerChallenge(){
@@ -274,6 +275,7 @@ async function handle(req,res){
       validWindowsCall(tool,args) :
     (oauthProbePath && tool==="submit_routed_windows_operation") ? validRoutedCall(args) :
     (oauthProbePath && tool==="submit_admin_powershell") ? validAdminPowerShellCall(args) :
+    (oauthProbePath && tool==="submit_optional_diagnostic") ? validOptionalDiagnosticCall(args) :
     (oauthProbePath && tool==="browser_batch") ? validBrowserBatch(args) :
     (oauthProbePath && typeof tool==="string" && tool.startsWith("rea_")) ? validReaCall(tool,args) :
     (oauthProbePath && typeof tool==="string" && tool.startsWith("memory_")) ? validMemoryCall(tool,args) : exactEmpty;
@@ -313,6 +315,40 @@ async function handle(req,res){
       content:[{type:"text",text:"Authentication required. No machine permissions."}],
       isError:true,
       _meta:{"mcp/www_authenticate":[challenge]}
+    }));
+  }
+  if (oauthProbePath && tool==="submit_optional_diagnostic") {
+    // Separate opt-in lane: never reject or alter legacy owner-authorized
+    // submissions, completion receipts, heartbeat or emergency recovery.
+    const bearer=String(req.headers.authorization||"");
+    const pressure=await callQueuePressureEdge(bearer);
+    if(pressure.unauthorized)return respond(res,200,ok(id,ownerChallenge()));
+    const plan=planOptionalDiagnosticAdmission(pressure.value);
+    if(!plan.admitted) {
+      const deferred={deferred:true,queued:false,reason:plan.reason,
+        operation:args.operation};
+      return respond(res,200,ok(id,{
+        content:[{type:"text",text:JSON.stringify(deferred)}],
+        structuredContent:deferred,isError:false
+      }));
+    }
+    const request=prepareOptionalDiagnostic(args);
+    if(!validWindowsCall("submit_windows_operation",request))
+      return respond(res,200,ok(id,{
+        content:[{type:"text",text:"Invalid optional diagnostic"}],isError:true
+      }));
+    const dispatched=await callWindowsOperation(bearer,"submit_windows_operation",request);
+    if(dispatched.unauthorized)return respond(res,200,ok(id,ownerChallenge()));
+    if(dispatched.value) {
+      const receipt={...dispatched.value,admission_mode:"optional_preflight"};
+      return respond(res,200,ok(id,{
+        content:[{type:"text",text:JSON.stringify(receipt)}],
+        structuredContent:receipt,isError:false
+      }));
+    }
+    return respond(res,200,ok(id,{
+      content:[{type:"text",text:dispatched.error||"Optional diagnostic unavailable"}],
+      isError:true
     }));
   }
   if (oauthProbePath && tool==="queue_pressure_status") {
