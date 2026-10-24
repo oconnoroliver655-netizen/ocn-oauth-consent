@@ -9,6 +9,8 @@ on:
   pull_request:
     paths:
       - "canary/mcp/**"
+      - "supabase/functions/ocn-owner-health-dispatch/**"
+      - "tests/queue-pressure-edge.test.mjs"
       - ".github/workflows/render-mcp-canary.yml"
   workflow_dispatch:
 permissions:

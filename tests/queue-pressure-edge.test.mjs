@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {fileURLToPath} from "node:url";
-import {classifyQueuePressure} from "../supabase/functions/ocn-owner-health-dispatch/queue-pressure.mjs";
+import {classifyQueuePressure,parseExactContentRange,activeQueueComplete} from "../supabase/functions/ocn-owner-health-dispatch/queue-pressure.mjs";
 const now="2026-10-25T00:00:00Z",ms=Date.parse(now);
 const at=(seconds)=>new Date(ms+seconds*1000).toISOString();
 const base=(state={phase:"claim",claims_enabled:true},extra={})=>({
@@ -72,4 +72,42 @@ test("Render MCP only exposes queue telemetry with owner OAuth",()=>{
   assert.ok(s.includes('r.status===401'));
   assert.ok(s.includes('active_queue_complete'));
   assert.ok(!s.includes("QUEUE_PRESSURE_ENFORCE_SUBMIT"));
+});
+
+test("exact PostgREST Content-Range total handles zero and normal counts",()=>{
+  assert.equal(parseExactContentRange("*/0"),0);
+  assert.equal(parseExactContentRange("0-1/2"),2);
+  assert.equal(parseExactContentRange("0-999/1500"),1500);
+  assert.equal(parseExactContentRange("0-999/*"),null);
+  assert.equal(parseExactContentRange(null),null);
+  assert.equal(parseExactContentRange("malformed/20"),null);
+  assert.equal(parseExactContentRange("0-9/999999999999999999999999"),null);
+});
+test("API max_rows truncation is never considered complete",()=>{
+  assert.equal(activeQueueComplete(Array(1000).fill({}),1500),false);
+  assert.equal(activeQueueComplete(Array(77).fill({}),92),false);
+  assert.equal(activeQueueComplete(Array(1000).fill({}),3000),false);
+  assert.equal(activeQueueComplete(Array(25).fill({}),25),true);
+  assert.equal(activeQueueComplete([],0),true);
+});
+test("invalid or over-limit queue samples do not pass",()=>{
+  assert.equal(activeQueueComplete(Array(2).fill({}),1),null);
+  assert.equal(activeQueueComplete(Array(2001).fill({}),2001),null);
+  assert.equal(activeQueueComplete([],null),null);
+  assert.equal(activeQueueComplete({},0),null);
+});
+test("Edge pressure selector requests exact count and owner-device scoping",()=>{
+  const index=readFileSync(new URL("../supabase/functions/ocn-owner-health-dispatch/index.ts",import.meta.url),"utf8");
+  const start=index.indexOf("async function queuePressureStatus()");
+  const stop=index.indexOf("async function dispatchHealth()",start);
+  assert.ok(start>0 && stop>start);
+  const section=index.slice(start,stop);
+  assert.ok(section.includes('headers:serverHeaders("count=exact")'));
+  assert.ok(section.includes('"request->>bound_owner":"eq."+OWNER'));
+  assert.ok(section.includes('"request->>bound_agent_id":"eq."+DEVICE'));
+  assert.ok(section.includes('cmdRes.headers.get("content-range")'));
+  assert.ok(section.includes('activeQueueComplete(active,count,2000)'));
+  assert.ok(section.includes('method:"GET"'));
+  for (const method of ["POST","PATCH","DELETE"])assert.ok(!section.includes('method:"'+method+'"'));
+  assert.ok(!section.includes('select:"request'));
 });

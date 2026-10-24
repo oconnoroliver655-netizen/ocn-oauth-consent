@@ -55,3 +55,23 @@ export function classifyQueuePressure({observedAt, agents, commands, complete}) 
     oldest_claimed_age_s: oldestClaimedAge, near_expiry_queued: nearExpiry
   };
 }
+
+/** Extract PostgREST's exact total from Content-Range; never infer it from
+ * the number of rows returned because the Data API may cap each response. */
+export function parseExactContentRange(value) {
+  if (typeof value !== "string") return null;
+  const parts=value.trim().split("/");
+  if (parts.length!==2) return null;
+  if (parts[0]!=="*" && !/^[0-9]+-[0-9]+$/.test(parts[0])) return null;
+  if (!/^[0-9]+$/.test(parts[1])) return null;
+  const total=Number(parts[1]);
+  return Number.isSafeInteger(total) && total>=0 ? total : null;
+}
+
+/** Returns null for structurally invalid data; otherwise fail-closed when
+ * exact total exceeds the sample or the service's configured max_rows. */
+export function activeQueueComplete(rows,total,max=2000) {
+  if (!Array.isArray(rows) || !Number.isSafeInteger(total) || total<0 ||
+      rows.length>max || rows.length>total) return null;
+  return total<=max && rows.length===total;
+}
