@@ -65,34 +65,61 @@ async function getRows(query: URLSearchParams): Promise<any[]|null> {
   return Array.isArray(body) ? body : null;
 }
 
+// Exact PostgREST count must agree with returned metadata length.
+// A larger requested limit does NOT bypass Supabase's configured max_rows.
+export function parseExactContentRange(value: string|null): number|null {
+  const m = typeof value === "string" ? /\\/(\\d+)$/.exec(value) : null;
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isSafeInteger(n) && n>=0 ? n : null;
+}
+
 async function queuePressureStatus(): Promise<Response> {
-  // Authenticated upstream; bounded, device-scoped, metadata-only queries.
-  // This action does NOT insert, claim, expire, or complete any queue item.
+  // Signed owner OAuth is checked before invoking this method.
+  // Restrict metadata to the single bound Windows device and owner.
+  // No operation or other client input may select a different owner/device.
   const filters = new URLSearchParams({
     select:"status,created_at,claimed_at,expires_at",
-    status:"in.(queued,claimed,running)", order:"created_at.asc", limit:"2001"
+    status:"in.(queued,claimed,running)",
+    "request->>bound_owner":"eq."+OWNER,
+    "request->>bound_agent_id":"eq."+DEVICE,
+    order:"created_at.asc",
+    limit:"2001"
   });
   const agentQuery = new URLSearchParams({
     select:"last_seen_at,state", agent_id:"eq."+DEVICE,
     order:"last_seen_at.desc", limit:"1"
   });
-  const agentUrl = SUPABASE + "/rest/v1/local_control_agents?" + agentQuery.toString();
-  const [active, agentRes] = await Promise.all([
-    getRows(filters),
-    fetch(agentUrl, {method:"GET",headers:serverHeaders(),
-      signal:AbortSignal.timeout(6000)})
+  const commandUrl = SUPABASE+"/rest/v1/local_control_commands?"+filters.toString();
+  const agentUrl = SUPABASE+"/rest/v1/local_control_agents?"+agentQuery.toString();
+  const [cmdRes,agentRes] = await Promise.all([
+    fetch(commandUrl,{
+      method:"GET",
+      headers:serverHeaders("count=exact"),
+      signal:AbortSignal.timeout(6000)
+    }),
+    fetch(agentUrl,{
+      method:"GET",headers:serverHeaders(),signal:AbortSignal.timeout(6000)
+    })
   ]);
-  if (active === null || !agentRes.ok)
+  if (!cmdRes.ok || !agentRes.ok)
     return response(503,{ok:false,error:"Queue telemetry unavailable"});
-  const agents = await agentRes.json().catch(()=>null);
-  if (!Array.isArray(agents))
+  const [active,agents] = await Promise.all([
+    cmdRes.json().catch(()=>null),agentRes.json().catch(()=>null)
+  ]);
+  const count = parseExactContentRange(cmdRes.headers.get("content-range"));
+  if (!Array.isArray(active) || !Array.isArray(agents) ||
+      count===null || active.length>2000 || active.length>count)
     return response(503,{ok:false,error:"Queue telemetry unavailable"});
+  // Only claim complete when the independently supplied exact total matches.
+  // This protects against max_rows truncation, partial responses, and
+  // inconclusive count headers, without querying or exposing command content.
+  const complete = count<=2000 && active.length===count;
   const result = classifyQueuePressure({
-    observedAt:new Date().toISOString(), agents,
-    commands:active.slice(0,2000),
-    complete:active.length <= 2000
+    observedAt:new Date().toISOString(),agents,
+    commands:active,complete
   });
-  if (!result.ok) return response(503,{ok:false,error:"Queue telemetry invalid"});
+  if (!result.ok)return response(503,{ok:false,error:"Queue telemetry invalid"});
   return response(200,result);
 }
 
