@@ -1,0 +1,23 @@
+name: OCN queue pressure live OAuth discovery
+on:
+  pull_request:
+    branches:
+      - feature/render-mcp-ping-canary-20261012
+    paths:
+      - "canary/mcp/tests/queue-pressure-live.test.mjs"
+      - ".github/workflows/ocn-queue-pressure-live.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-oauth-discovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read-only MCP discovery and unsigned OAuth refusal
+        run: |
+          node --check canary/mcp/tests/queue-pressure-live.test.mjs
+          node --test canary/mcp/tests/queue-pressure-live.test.mjs
