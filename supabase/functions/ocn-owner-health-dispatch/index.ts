@@ -68,9 +68,11 @@ async function getRows(query: URLSearchParams): Promise<any[]|null> {
 // Exact PostgREST count must agree with returned metadata length.
 // A larger requested limit does NOT bypass Supabase's configured max_rows.
 export function parseExactContentRange(value: string|null): number|null {
-  const m = typeof value === "string" ? /\\/(\\d+)$/.exec(value) : null;
-  if (!m) return null;
-  const n = Number(m[1]);
+  if (typeof value !== "string") return null;
+  const parts=value.split("/");
+  const tail=parts.length===2 ? parts[1] : "";
+  if (!/^[0-9]+$/.test(tail)) return null;
+  const n=Number(tail);
   return Number.isSafeInteger(n) && n>=0 ? n : null;
 }
 
