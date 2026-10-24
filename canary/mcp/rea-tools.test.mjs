@@ -17,7 +17,7 @@ test("publish precisely nine owner-bound tools with correct schema",()=>{
  for(const tool of REA_TOOLS){
   assert.deepEqual(tool.securitySchemes,[{type:"oauth2",scopes:["openid","email"]}]);
   assert.equal(tool.inputSchema.additionalProperties,false);
-  assert.equal(tool.annotations.destructiveHint,tool.name==="rea_submit_tool");
+  assert.equal(tool.annotations.destructiveHint,["rea_submit_tool","rea_cancel"].includes(tool.name));
  }
 });
 test("all operations validate and dispatch to existing owner session",()=>{

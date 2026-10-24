@@ -37,7 +37,7 @@ export const REA_TOOLS=promptMeta.map(([name,description,properties,required])=>
   name,description,
   inputSchema:{type:"object",properties,required,additionalProperties:false},
   securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
-  annotations:{readOnlyHint:readOnly.has(name),destructiveHint:name==="rea_submit_tool",openWorldHint:name==="rea_submit_tool"}
+  annotations:{readOnlyHint:readOnly.has(name),destructiveHint:name==="rea_submit_tool"||name==="rea_cancel",openWorldHint:name==="rea_submit_tool"}
 }));
 function object(v){return v!==null&&typeof v==="object"&&!Array.isArray(v);}
 export function validReaCall(name,args){
