@@ -83,9 +83,20 @@ test("separate OAuth test path advertises protected tool and always challenges",
   const extra=tools.slice(legacy.length).map(t=>t.name);
   assert.equal(extra.filter(x=>x==="submit_admin_powershell").length,1);
   assert.equal(extra.filter(x=>x==="submit_routed_windows_operation").length,1);
-  const reaExtras=extra.filter(x=>x!=="submit_admin_powershell" && x!=="submit_routed_windows_operation");
-  assert.ok(reaExtras.every(x=>expectedRea.includes(x)));
-  if(process.env.OCN_REQUIRE_REA==="1")assert.deepEqual(reaExtras,expectedRea);
+  const expectedMemory=[
+    "memory_status","memory_search","memory_get","memory_save",
+    "memory_update","memory_delete","memory_backup"
+  ];
+  const expectedAdditions=[...expectedRea,...expectedMemory,
+    "submit_admin_powershell","submit_routed_windows_operation","queue_pressure_status"];
+  assert.equal(extra.length,expectedAdditions.length);
+  assert.deepEqual(new Set(extra),new Set(expectedAdditions));
+  const pressure=tools.find(x=>x.name==="queue_pressure_status");
+  assert.equal(pressure.annotations.readOnlyHint,true);
+  assert.equal(pressure.annotations.destructiveHint,false);
+  assert.deepEqual(pressure.securitySchemes,[{type:"oauth2",scopes:["openid","email"]}]);
+  if(process.env.OCN_REQUIRE_REA==="1")
+    assert.deepEqual(extra.filter(x=>expectedRea.includes(x)),expectedRea);
   assert.equal(tools[4].annotations.readOnlyHint,true);
   assert.equal(tools[5].annotations.destructiveHint,true);
   assert.equal(tools[6].annotations.destructiveHint,true);
