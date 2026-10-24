@@ -5,6 +5,7 @@
 // which checks signed issuer/client/resource + active consent/session per call.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {BROWSER_OPERATIONS, validBrowserPayload} from "./browser-operation-policy.mjs";
+import {classifyQueuePressure} from "./queue-pressure.mjs";
 
 const SUPABASE = "https://ouxniljtjxnrkwakkvbv.supabase.co";
 const VALIDATOR = SUPABASE + "/functions/v1/ocn-oauth-validator";
@@ -62,6 +63,37 @@ async function getRows(query: URLSearchParams): Promise<any[]|null> {
   if (!r.ok) return null;
   const body = await r.json();
   return Array.isArray(body) ? body : null;
+}
+
+async function queuePressureStatus(): Promise<Response> {
+  // Authenticated upstream; bounded, device-scoped, metadata-only queries.
+  // This action does NOT insert, claim, expire, or complete any queue item.
+  const filters = new URLSearchParams({
+    select:"status,created_at,claimed_at,expires_at",
+    status:"in.(queued,claimed,running)", order:"created_at.asc", limit:"2001"
+  });
+  const agentQuery = new URLSearchParams({
+    select:"last_seen_at,state", agent_id:"eq."+DEVICE,
+    order:"last_seen_at.desc", limit:"1"
+  });
+  const agentUrl = SUPABASE + "/rest/v1/local_control_agents?" + agentQuery.toString();
+  const [active, agentRes] = await Promise.all([
+    getRows(filters),
+    fetch(agentUrl, {method:"GET",headers:serverHeaders(),
+      signal:AbortSignal.timeout(6000)})
+  ]);
+  if (active === null || !agentRes.ok)
+    return response(503,{ok:false,error:"Queue telemetry unavailable"});
+  const agents = await agentRes.json().catch(()=>null);
+  if (!Array.isArray(agents))
+    return response(503,{ok:false,error:"Queue telemetry unavailable"});
+  const result = classifyQueuePressure({
+    observedAt:new Date().toISOString(), agents,
+    commands:active.slice(0,2000),
+    complete:active.length <= 2000
+  });
+  if (!result.ok) return response(503,{ok:false,error:"Queue telemetry invalid"});
+  return response(200,result);
 }
 
 async function dispatchHealth(): Promise<Response> {
@@ -228,10 +260,12 @@ Deno.serve(async (req:Request):Promise<Response> => {
   if (!(action === "submit_machine_health" && keys === "action" ||
         action === "poll_machine_health" && keys === "action,command_id,nonce" ||
         action === "submit_windows_operation" && keys === "action,operation,payload" ||
-        action === "poll_windows_operation" && keys === "action,command_id,nonce"))
+        action === "poll_windows_operation" && keys === "action,command_id,nonce" ||
+        action === "queue_pressure_status" && keys === "action"))
     return response(400,{ok:false,error:"Unsupported operation"});
 
   try {
+    if(action==="queue_pressure_status")return await queuePressureStatus();
     if(action==="submit_windows_operation")return await submitWindows(input);
     if(action==="poll_windows_operation")return await pollWindows(input);
     return action === "submit_machine_health" ?
