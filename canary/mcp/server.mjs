@@ -4,6 +4,7 @@ import {ROUTED_WINDOWS_TOOL,validRoutedCall,prepareRoutedWindowsRequest} from ".
 import {BROWSER_BATCH_TOOL,validBrowserBatch,buildBrowserBatchRequest} from "./browser-batch.mjs";
 import {REA_TOOLS,validReaCall,callReaTool} from "./rea-tools.mjs";
 import {MEMORY_TOOLS,validMemoryCall,callMemoryTool} from "./memory-tools.mjs";
+import {THREADS_TOOLS,validThreadsCall,callThreadsTool} from "./threads-tools.mjs";
 import {OPTIONAL_DIAGNOSTIC_TOOL,validOptionalDiagnosticCall,prepareOptionalDiagnostic,planOptionalDiagnosticAdmission} from "./optional-diagnostic-admission.mjs";
 const ciBackend = createCiBackend();
 // Owner OAuth MCP endpoint: public ping and owner-bound Windows operations.
@@ -113,7 +114,7 @@ function toolList(oauthProbe=false){
     annotations:{readOnlyHint:name==="poll_machine_health",destructiveHint:false,openWorldHint:false}
   });
   // Reuse the already-installed OCN OAuth Probe plugin; no new ChatGPT plugin required.
-  if (oauthProbe) listed.push(...CI_TOOLS,...WINDOWS_TOOLS,...DIRECT_BROWSER_TOOLS,BROWSER_BATCH_TOOL,...REA_TOOLS,...MEMORY_TOOLS,ADMIN_POWERSHELL_TOOL,ROUTED_WINDOWS_TOOL,QUEUE_PRESSURE_TOOL,OPTIONAL_DIAGNOSTIC_TOOL);
+  if (oauthProbe) listed.push(...CI_TOOLS,...WINDOWS_TOOLS,...DIRECT_BROWSER_TOOLS,BROWSER_BATCH_TOOL,...REA_TOOLS,...MEMORY_TOOLS,...THREADS_TOOLS,ADMIN_POWERSHELL_TOOL,ROUTED_WINDOWS_TOOL,QUEUE_PRESSURE_TOOL,OPTIONAL_DIAGNOSTIC_TOOL);
   return listed;
 }
 function ownerChallenge(){
@@ -278,7 +279,8 @@ async function handle(req,res){
     (oauthProbePath && tool==="submit_optional_diagnostic") ? validOptionalDiagnosticCall(args) :
     (oauthProbePath && tool==="browser_batch") ? validBrowserBatch(args) :
     (oauthProbePath && typeof tool==="string" && tool.startsWith("rea_")) ? validReaCall(tool,args) :
-    (oauthProbePath && typeof tool==="string" && tool.startsWith("memory_")) ? validMemoryCall(tool,args) : exactEmpty;
+    (oauthProbePath && typeof tool==="string" && tool.startsWith("memory_")) ? validMemoryCall(tool,args) :
+    (oauthProbePath && typeof tool==="string" && tool.startsWith("threads_")) ? validThreadsCall(tool,args) : exactEmpty;
   if (!validCall)
     return respond(res,200,ok(id,{content:[{type:"text",text:"Invalid tool arguments"}],isError:true}));
   if (message.params.name==="ping")
@@ -416,6 +418,26 @@ async function handle(req,res){
     return respond(res,200,ok(id,{
       content:[{type:"text",text:result.error||"Local memory operation unavailable"}],isError:true
     }));
+  }
+  // Threads Graph calls execute only AFTER signed OCN owner verification.
+  // A Meta token is separate, server-only, and writes are disabled by default.
+  if (oauthProbePath && THREADS_TOOLS.some(x=>x.name===tool)) {
+    const bearer=String(req.headers.authorization||"");
+    if (!(await ciBackend.authenticated(bearer)))
+      return respond(res,200,ok(id,ownerChallenge()));
+    try {
+      const value=await callThreadsTool(tool,args);
+      return respond(res,200,ok(id,{
+        content:[{type:"text",text:JSON.stringify(value)}],
+        structuredContent:value,isError:false
+      }));
+    } catch(e) {
+      const message=typeof e?.message==="string" &&
+        /^[A-Z0-9_ =-]{1,120}$/.test(e.message) ? e.message : "THREADS_UNAVAILABLE";
+      return respond(res,200,ok(id,{
+        content:[{type:"text",text:message}],isError:true
+      }));
+    }
   }
   // REA is dispatched only through existing Supabase-verified owner OAuth and
   // the limited Windows Agent. No Render-side REA process, file access or secret.
