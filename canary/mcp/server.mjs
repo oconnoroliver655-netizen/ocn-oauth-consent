@@ -5,6 +5,7 @@ import {BROWSER_BATCH_TOOL,validBrowserBatch,buildBrowserBatchRequest} from "./b
 import {REA_TOOLS,validReaCall,callReaTool} from "./rea-tools.mjs";
 import {MEMORY_TOOLS,validMemoryCall,callMemoryTool} from "./memory-tools.mjs";
 import {OPTIONAL_DIAGNOSTIC_TOOL,validOptionalDiagnosticCall,prepareOptionalDiagnostic,planOptionalDiagnosticAdmission} from "./optional-diagnostic-admission.mjs";
+import {FUSION_UI_TOOL,validFusionUiPayload} from "./fusion-ui-policy.mjs";
 const ciBackend = createCiBackend();
 // Owner OAuth MCP endpoint: public ping and owner-bound Windows operations.
 // Authentication remains in the signed Supabase OAuth validator.
@@ -113,7 +114,7 @@ function toolList(oauthProbe=false){
     annotations:{readOnlyHint:name==="poll_machine_health",destructiveHint:false,openWorldHint:false}
   });
   // Reuse the already-installed OCN OAuth Probe plugin; no new ChatGPT plugin required.
-  if (oauthProbe) listed.push(...CI_TOOLS,...WINDOWS_TOOLS,...DIRECT_BROWSER_TOOLS,BROWSER_BATCH_TOOL,...REA_TOOLS,...MEMORY_TOOLS,ADMIN_POWERSHELL_TOOL,ROUTED_WINDOWS_TOOL,QUEUE_PRESSURE_TOOL,OPTIONAL_DIAGNOSTIC_TOOL);
+  if (oauthProbe) listed.push(...CI_TOOLS,...WINDOWS_TOOLS,...DIRECT_BROWSER_TOOLS,BROWSER_BATCH_TOOL,...REA_TOOLS,...MEMORY_TOOLS,ADMIN_POWERSHELL_TOOL,ROUTED_WINDOWS_TOOL,QUEUE_PRESSURE_TOOL,OPTIONAL_DIAGNOSTIC_TOOL,FUSION_UI_TOOL);
   return listed;
 }
 function ownerChallenge(){
@@ -276,6 +277,7 @@ async function handle(req,res){
     (oauthProbePath && tool==="submit_routed_windows_operation") ? validRoutedCall(args) :
     (oauthProbePath && tool==="submit_admin_powershell") ? validAdminPowerShellCall(args) :
     (oauthProbePath && tool==="submit_optional_diagnostic") ? validOptionalDiagnosticCall(args) :
+    (oauthProbePath && tool==="fusion_test_ui") ? validFusionUiPayload(args) :
     (oauthProbePath && tool==="browser_batch") ? validBrowserBatch(args) :
     (oauthProbePath && typeof tool==="string" && tool.startsWith("rea_")) ? validReaCall(tool,args) :
     (oauthProbePath && typeof tool==="string" && tool.startsWith("memory_")) ? validMemoryCall(tool,args) : exactEmpty;
@@ -349,6 +351,23 @@ async function handle(req,res){
     return respond(res,200,ok(id,{
       content:[{type:"text",text:dispatched.error||"Optional diagnostic unavailable"}],
       isError:true
+    }));
+  }
+  if (oauthProbePath && tool==="fusion_test_ui") {
+    // The Edge function and Windows Desktop Agent validate the same narrow
+    // disposable-browser scope independently. No unscoped UIA operations.
+    const target={operation:"fusion_test_ui",payload:args};
+    if(!validWindowsCall("submit_windows_operation",target))
+      return respond(res,200,ok(id,{content:[{type:"text",text:"Invalid Fusion GUI scope"}],isError:true}));
+    const result=await callWindowsOperation(String(req.headers.authorization||""),
+      "submit_windows_operation",target);
+    if(result.unauthorized)return respond(res,200,ok(id,ownerChallenge()));
+    if(result.value)return respond(res,200,ok(id,{
+      content:[{type:"text",text:JSON.stringify(result.value)}],
+      structuredContent:result.value,isError:false
+    }));
+    return respond(res,200,ok(id,{
+      content:[{type:"text",text:result.error||"Fusion GUI unavailable"}],isError:true
     }));
   }
   if (oauthProbePath && tool==="queue_pressure_status") {
