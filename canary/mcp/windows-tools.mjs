@@ -1,4 +1,5 @@
 import {BROWSER_OPERATIONS, validBrowserPayload} from "./browser-operation-policy.mjs";
+import {validFusionUiPayload} from "./fusion-ui-policy.mjs";
 
 // Existing single owner + existing Supabase queue + existing Windows Agent.
 // No new Windows service, no new plugin, no extra secret on Render.
@@ -8,6 +9,7 @@ const OPERATIONS=[
   "powershell","exec","desktop_health","window_list","screenshot",
   "uia_tree","code_search","audit_recent","process_sessions",
   "terminal_sessions","desktop_lease_status",
+  "fusion_test_ui",
   ...BROWSER_OPERATIONS
 ];
 export const WINDOWS_TOOLS=[
@@ -43,7 +45,8 @@ export function validWindowsCall(tool,args){
     return keys==="operation,payload" && OPERATIONS.includes(args.operation) &&
       args.payload!==null&&typeof args.payload==="object"&&!Array.isArray(args.payload) &&
       (!BROWSER_OPERATIONS.includes(args.operation) ||
-       validBrowserPayload(args.operation,args.payload));
+       validBrowserPayload(args.operation,args.payload)) &&
+      (args.operation!=="fusion_test_ui" || validFusionUiPayload(args.payload));
   return false;
 }
 export async function callWindowsOperation(bearer,tool,args){
