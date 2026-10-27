@@ -4,7 +4,7 @@ import {BROWSER_OPERATIONS, validBrowserPayload} from '../browser-operation-poli
 test('every declared browser tool has valid empty or typed args',()=>{
   for(const action of ['browser_connect','browser_status','browser_disconnect','browser_snapshot','browser_navigate_back','browser_tab_list'])
     assert.equal(validBrowserPayload(action,{}),true,action);
-  assert.equal(BROWSER_OPERATIONS.length,10);
+  assert.equal(BROWSER_OPERATIONS.length,12);
 });
 test('navigation requires public HTTP(S) URL',()=>{
   assert.equal(validBrowserPayload('browser_navigate',{url:'https://example.org'}),true);

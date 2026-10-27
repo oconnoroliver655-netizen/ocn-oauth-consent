@@ -34,7 +34,7 @@ function validUnifiedBatch(payload){
     const tool=step.tool,a=step.arguments;
     if(UNIFIED_SENSITIVE.has(tool)&&payload.unsafe_approved!==true)return false;
     if(CAPABILITY_TOOLS[tool]&&!caps.includes(CAPABILITY_TOOLS[tool]))return false;
-    if(tool==='browser_navigate'&&(!/^https?:\/\//.test(a.url)||!validUrl(a.url)))return false;
+    if(tool==='browser_navigate'&&!validUrl(a.url))return false;
     if(tool==='browser_tabs'&&a.action==='new'&&'url' in a&&(!/^https?:\/\//.test(a.url)||!validUrl(a.url)))return false;
     if((tool==='browser_file_upload'||tool==='browser_drop')&&'paths' in a&&(!Array.isArray(a.paths)||a.paths.length>30||a.paths.some(p=>typeof p!=='string'||p.length>32767)))return false;
     return true;

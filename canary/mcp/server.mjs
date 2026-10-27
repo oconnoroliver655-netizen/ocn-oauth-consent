@@ -389,8 +389,9 @@ async function handle(req,res){
       content:[{type:"text",text:result.error||"Browser operation unavailable"}],isError:true
     }));
   }
-  // Extended Playwright tools are delivered as one signed owner/device-specific
-  // user PowerShell command. Render never controls Chrome or reads local files.
+  // Extended Playwright tools are delivered as one typed owner/device-bound
+  // browser_batch_unified queue operation. Render never starts Chrome or reads
+  // local files, and reuse_session cannot opt out of the durable host.
   if (oauthProbePath && tool==="browser_batch") {
     const prepared=buildBrowserBatchRequest(args);
     const result=await callWindowsOperation(String(req.headers.authorization||""),
