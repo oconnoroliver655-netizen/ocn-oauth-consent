@@ -11,6 +11,7 @@ const ciBackend = createCiBackend();
 // Authentication for each protected call remains in Supabase's signed ES256
 // token validator, not in client-supplied JSON or this publicly exposed host.
 import { createServer } from "node:http";
+import {createRequestTelemetry} from "./request-telemetry.mjs";
 const DIRECT_BROWSER_OPERATIONS = Object.freeze([
   "browser_status","browser_connect","browser_tab_list","browser_snapshot"
 ]);
@@ -527,7 +528,9 @@ async function runPr529CredentialPreflight(){
   }));
 }
 export function start(port=PORT){
+  const observeRequest=createRequestTelemetry();
   const server=createServer((req,res)=>{
+    observeRequest(req,res);
     handle(req,res).catch(()=>respond(res,500,{error:"Internal error"}));
   });
   server.listen(port,"0.0.0.0");
