@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {EventEmitter} from "node:events";
-import {createRequestTelemetry} from "./request-telemetry.mjs";
+import {createRequestTelemetry,classifyRequestOrigin} from "./request-telemetry.mjs";
 
 function fakeResponse(statusCode=200) {
   const res = new EventEmitter();
@@ -82,4 +82,25 @@ test("telemetry writer exceptions never affect HTTP completion",() => {
   const res=fakeResponse(200);
   observe({method:"GET",url:"/healthz",headers:{}},res);
   assert.doesNotThrow(()=>res.emit("finish"));
+});
+
+test("Origin category and trace are bounded and never leak caller data", () => {
+  assert.equal(classifyRequestOrigin(undefined),"absent");
+  assert.equal(classifyRequestOrigin("https://chatgpt.com"),"trusted_chatgpt");
+  assert.equal(classifyRequestOrigin("https://chat.openai.com"),"trusted_legacy");
+  assert.equal(classifyRequestOrigin("null"),"opaque");
+  assert.equal(classifyRequestOrigin("https://unsafe.example?token=private"),"untrusted");
+  assert.equal(classifyRequestOrigin(["https://chatgpt.com"]),"untrusted");
+  const lines=[];
+  const req={method:"POST",url:"/mcp-oauth?secret=never",headers:{
+    origin:"https://unsafe.example?token=private",authorization:"Bearer private-token"
+  }};
+  const res=fakeResponse(403);
+  createRequestTelemetry({write:line=>lines.push(line)})(req,res);
+  res.emit("finish");
+  const entry=JSON.parse(lines[0]);
+  assert.equal(entry.origin_class,"untrusted");
+  assert.equal(entry.trace_id,req._ocnTraceId);
+  assert.match(entry.trace_id,/^[0-9a-f-]{36}$/);
+  assert.doesNotMatch(lines[0],/unsafe\.example|private-token|secret=never/i);
 });
