@@ -12,6 +12,15 @@ const ROUTES = new Map([
 const METHODS = new Set(["GET", "POST", "HEAD", "OPTIONS"]);
 const RENDER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// Fixed categories only. Never emit raw request Origin, cookies or tokens.
+export function classifyRequestOrigin(origin) {
+  if (origin === undefined) return "absent";
+  if (origin === "https://chatgpt.com") return "trusted_chatgpt";
+  if (origin === "https://chat.openai.com") return "trusted_legacy";
+  if (origin === "null") return "opaque";
+  return "untrusted";
+}
+
 export function createRequestTelemetry({
   clock = () => Date.now(),
   write = line => console.log(line),
@@ -47,6 +56,8 @@ export function createRequestTelemetry({
     const rawRenderId = req.headers?.["rndr-id"];
     const renderId = typeof rawRenderId === "string" && RENDER_ID.test(rawRenderId) ? rawRenderId : null;
     const traceId = randomUUID();
+    req._ocnTraceId = traceId;
+    const originClass = classifyRequestOrigin(req.headers?.origin);
     let finished = false;
 
     const finalize = completion => {
@@ -56,6 +67,7 @@ export function createRequestTelemetry({
       record({
         event:"ocn_http_request",
         trace_id:traceId,
+        origin_class:originClass,
         render_request_id:renderId,
         route,
         method,
