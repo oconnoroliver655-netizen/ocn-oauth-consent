@@ -159,6 +159,18 @@ test("exact ChatGPT browser origins can discover metadata without changing OAuth
   }
   const denied=await httpFetch(base+"/mcp-ci-guard",{method:"POST",headers:headers({origin:"https://chatgpt.com"}),body:"{}"});
   assert.equal(denied.status,403);
+  assert.match(denied.headers.get("x-ocn-app-trace-id"),/^[0-9a-f-]{36}$/);
+});
+test("application 403 is traceable while trusted and absent Origins stay accepted",async()=>{
+  const hostile=await httpFetch(base+"/mcp-oauth",{method:"GET",headers:headers({origin:"https://blocked.example"})});
+  assert.equal(hostile.status,403);
+  assert.match(hostile.headers.get("x-ocn-app-trace-id"),/^[0-9a-f-]{36}$/);
+  for(const origin of [undefined,"https://chatgpt.com"]){
+    const h=origin?headers({origin}):headers();
+    const r=await httpFetch(base+"/mcp-oauth",{method:"GET",headers:h});
+    assert.equal(r.status,405);
+    assert.equal(r.headers.get("x-ocn-app-trace-id"),null);
+  }
 });
 test("unknown tool never triggers any side effects",async()=>{
   const r=await rpc("tools/call",{name:"run_shell",arguments:{}});
