@@ -166,3 +166,22 @@ test("GET /mcp cannot launch arbitrary sessions",{timeout:50000},async()=>{
   const r=await fetch(base+"/mcp",{signal:AbortSignal.timeout(45000)});
   assert.equal(r.status,405);
 });
+
+
+test("live application 403 is traceable without weakening Origin checks",{timeout:50000},async()=>{
+  const options={method:"GET",signal:AbortSignal.timeout(45000)};
+  const denied=await fetch(base+"/mcp-oauth",{
+    ...options,headers:{origin:"https://untrusted.example"}
+  });
+  assert.equal(denied.status,403);
+  const trace=denied.headers.get("x-ocn-app-trace-id");
+  assert.match(trace,/^[0-9a-f-]{36}$/);
+  const response=await denied.json();
+  assert.deepEqual(response,{error:"Untrusted browser origin"});
+  for(const origin of [undefined,"https://chatgpt.com"]){
+    const headers=origin?{origin}:{};
+    const accepted=await fetch(base+"/mcp-oauth",{...options,headers});
+    assert.equal(accepted.status,405);
+    assert.equal(accepted.headers.get("x-ocn-app-trace-id"),null);
+  }
+});
