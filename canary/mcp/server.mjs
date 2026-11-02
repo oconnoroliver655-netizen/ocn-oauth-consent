@@ -11,7 +11,7 @@ const ciBackend = createCiBackend();
 // Authentication for each protected call remains in Supabase's signed ES256
 // token validator, not in client-supplied JSON or this publicly exposed host.
 import { createServer } from "node:http";
-import {createRequestTelemetry} from "./request-telemetry.mjs";
+import {createRequestTelemetry,classifyRequestOrigin} from "./request-telemetry.mjs";
 const DIRECT_BROWSER_OPERATIONS = Object.freeze([
   "browser_status","browser_connect","browser_tab_list","browser_snapshot"
 ]);
@@ -37,18 +37,11 @@ function auditRejectedBrowserOrigin(req) {
   const now = Date.now();
   if (now - originAuditWindow >= 60_000) { originAuditWindow = now; originAuditCount = 0; }
   if (originAuditCount++ >= 12) return;
-  const raw = String(req.headers.origin ?? "");
-  let safeOrigin = raw === "null" ? "null" : "noncanonical";
-  try {
-    const u = new URL(raw);
-    if (raw.length <= 160 && u.origin === raw &&
-        (u.protocol === "https:" || u.protocol === "http:") &&
-        /^[a-z0-9.-]{1,120}$/i.test(u.hostname)) safeOrigin = raw;
-  } catch { /* preserve noncanonical classification */ }
   console.warn(JSON.stringify({
     event:"ocn_origin_forbidden",
+    trace_id:typeof req._ocnTraceId === "string" ? req._ocnTraceId : null,
     route:req.url === "/mcp-oauth" ? "mcp-oauth" : "other",
-    origin:safeOrigin,
+    origin_class:classifyRequestOrigin(req.headers.origin),
     reason:req.url === "/mcp-ci-guard" ? "privileged_route_disallows_browser_origin" : "origin_not_allowlisted"
   }));
 }
@@ -76,6 +69,9 @@ function respond(res,status,value,extra={}) {
     "cache-control":"no-store",
     "x-content-type-options":"nosniff",
     "content-security-policy":"default-src 'none'",
+    // Identify application-level 403; edge-generated denials lack this marker.
+    ...(status===403 && typeof res._ocnTraceId==="string"
+      ? {"x-ocn-app-trace-id":res._ocnTraceId} : {}),
     ...(res._ocnTrustedBrowserOrigin ? {
       "access-control-allow-origin":res._ocnTrustedBrowserOrigin,
       "vary":"Origin"
