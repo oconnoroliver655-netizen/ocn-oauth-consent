@@ -57,6 +57,7 @@ export function createRequestTelemetry({
     const renderId = typeof rawRenderId === "string" && RENDER_ID.test(rawRenderId) ? rawRenderId : null;
     const traceId = randomUUID();
     req._ocnTraceId = traceId;
+    res._ocnTraceId = traceId;
     const originClass = classifyRequestOrigin(req.headers?.origin);
     let finished = false;
 
