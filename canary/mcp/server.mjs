@@ -1,5 +1,5 @@
 import {makeHandler, createBackend as createCiBackend, TOOLS as CI_TOOLS} from "./pr529-ci-guard.mjs";
-import {WINDOWS_TOOLS,validWindowsCall,callWindowsOperation,RUN_WINDOWS_TOOL,validRunWindowsCall,runWindowsOperation,DIRECT_FILE_READ_TOOL,validDirectFileReadCall,directFileReadToWindowsCall,ADMIN_POWERSHELL_TOOL,validAdminPowerShellCall,adminPowerShellToWindowsCall} from "./windows-tools.mjs";
+import {WINDOWS_TOOLS,validWindowsCall,callWindowsOperation,RUN_WINDOWS_TOOL,validRunWindowsCall,runWindowsOperation,DIRECT_FILE_READ_TOOL,validDirectFileReadCall,directFileReadToWindowsCall,DIRECT_FILE_LINES_TOOL,validDirectFileLinesCall,directFileLinesToWindowsCall,DIRECT_CODE_SEARCH_TOOL,validDirectCodeSearchCall,directCodeSearchToWindowsCall,ADMIN_POWERSHELL_TOOL,validAdminPowerShellCall,adminPowerShellToWindowsCall} from "./windows-tools.mjs";
 import {ROUTED_WINDOWS_TOOL,validRoutedCall,prepareRoutedWindowsRequest} from "./router-mcp.mjs";
 import {BROWSER_BATCH_TOOL,validBrowserBatch,buildBrowserBatchRequest} from "./browser-batch.mjs";
 import {REA_TOOLS,validReaCall,callReaTool} from "./rea-tools.mjs";
@@ -118,7 +118,7 @@ function toolList(oauthProbe=false){
     annotations:{readOnlyHint:name==="poll_machine_health",destructiveHint:false,openWorldHint:false}
   });
   // Reuse the already-installed OCN OAuth Probe plugin; no new ChatGPT plugin required.
-  if (oauthProbe) listed.push(...CI_TOOLS,...WINDOWS_TOOLS,RUN_WINDOWS_TOOL,DIRECT_FILE_READ_TOOL,...DIRECT_BROWSER_TOOLS,BROWSER_BATCH_TOOL,...REA_TOOLS,...MEMORY_TOOLS,ADMIN_POWERSHELL_TOOL,ROUTED_WINDOWS_TOOL,QUEUE_PRESSURE_TOOL,OPTIONAL_DIAGNOSTIC_TOOL);
+  if (oauthProbe) listed.push(...CI_TOOLS,...WINDOWS_TOOLS,RUN_WINDOWS_TOOL,DIRECT_FILE_READ_TOOL,DIRECT_FILE_LINES_TOOL,DIRECT_CODE_SEARCH_TOOL,...DIRECT_BROWSER_TOOLS,BROWSER_BATCH_TOOL,...REA_TOOLS,...MEMORY_TOOLS,ADMIN_POWERSHELL_TOOL,ROUTED_WINDOWS_TOOL,QUEUE_PRESSURE_TOOL,OPTIONAL_DIAGNOSTIC_TOOL);
   return listed;
 }
 function ownerChallenge(){
@@ -280,6 +280,8 @@ async function handle(req,res){
       validWindowsCall(tool,args) :
     (oauthProbePath && tool==="run_windows_operation") ? validRunWindowsCall(args) :
     (oauthProbePath && tool==="read_file") ? validDirectFileReadCall(args) :
+    (oauthProbePath && tool==="read_file_lines") ? validDirectFileLinesCall(args) :
+    (oauthProbePath && tool==="search_code") ? validDirectCodeSearchCall(args) :
     (oauthProbePath && tool==="submit_routed_windows_operation") ? validRoutedCall(args) :
     (oauthProbePath && tool==="submit_admin_powershell") ? validAdminPowerShellCall(args) :
     (oauthProbePath && tool==="submit_optional_diagnostic") ? validOptionalDiagnosticCall(args) :
@@ -485,8 +487,10 @@ async function handle(req,res){
   }
   // Single-call bounded wait reuses the same owner-bound queue and receipt
   // endpoint. A pending or interrupted wait retains the ORIGINAL task ID.
-  if(oauthProbePath && (tool==="run_windows_operation" || tool==="read_file")){
-    const prepared=tool==="read_file"?directFileReadToWindowsCall(args):args;
+  if(oauthProbePath && ["run_windows_operation","read_file","read_file_lines","search_code"].includes(tool)){
+    const prepared=tool==="read_file"?directFileReadToWindowsCall(args):
+      tool==="read_file_lines"?directFileLinesToWindowsCall(args):
+      tool==="search_code"?directCodeSearchToWindowsCall(args):args;
     const result=await runWindowsOperation(String(req.headers.authorization||""),prepared);
     if(result.unauthorized)return respond(res,200,ok(id,ownerChallenge()));
     if(result.value){

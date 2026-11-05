@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {RUN_WINDOWS_TOOL,validRunWindowsCall,runWindowsOperation,
-  DIRECT_FILE_READ_TOOL,validDirectFileReadCall,directFileReadToWindowsCall}
+  DIRECT_FILE_READ_TOOL,validDirectFileReadCall,directFileReadToWindowsCall,
+  DIRECT_FILE_LINES_TOOL,validDirectFileLinesCall,directFileLinesToWindowsCall,
+  DIRECT_CODE_SEARCH_TOOL,validDirectCodeSearchCall,directCodeSearchToWindowsCall}
   from "../windows-tools.mjs";
 
 const nonce="a".repeat(32);
@@ -173,4 +175,78 @@ test("outcome-uncertain needs_review stops wait, retains task identity and never
   assert.equal(r.value.nonce,nonce);
   assert.equal(calls.filter(x=>x.tool==="submit_windows_operation").length,1);
   assert.equal(calls.filter(x=>x.tool==="poll_windows_operation").length,1);
+});
+
+test("typed line read has bounded read-only schema and native payload fidelity",()=>{
+  const path=String.raw`D:\项目\代码\计划.txt`;
+  assert.equal(DIRECT_FILE_LINES_TOOL.name,"read_file_lines");
+  assert.equal(DIRECT_FILE_LINES_TOOL.annotations.readOnlyHint,true);
+  assert.equal(DIRECT_FILE_LINES_TOOL.annotations.destructiveHint,false);
+  assert.equal(DIRECT_FILE_LINES_TOOL.inputSchema.properties.length.maximum,1000);
+  assert.deepEqual(DIRECT_FILE_LINES_TOOL.securitySchemes,
+    [{type:"oauth2",scopes:["openid","email"]}]);
+  assert.equal(validDirectFileLinesCall({path,offset:10,length:16,encoding:"gb18030"}),true);
+  assert.deepEqual(directFileLinesToWindowsCall({path,offset:10,length:16,encoding:"gb18030",wait_seconds:2}),
+    {operation:"file_read_lines",payload:{path,offset:10,length:16,encoding:"gb18030"},wait_seconds:2});
+  assert.deepEqual(directFileLinesToWindowsCall({path}),{
+    operation:"file_read_lines",payload:{path,offset:0,length:100,encoding:"utf-8"},wait_seconds:8});
+  assert.equal(validDirectFileLinesCall({path,offset:-12}),true);
+});
+test("typed line reader rejects traversal-shaped paths, invalid limits and privilege metadata",()=>{
+  const p="C:\\projects\\README.md";
+  for(const args of [
+    null,{},[],{path:"README.md"},{path:"C:relative.txt"},
+    {path:String.raw`\\server\share.txt`},
+    {path:"C:\\foo\nbar.txt"},{path:p,offset:-1001},
+    {path:p,offset:1000001},{path:p,offset:1.5},
+    {path:p,length:0},{path:p,length:1001},{path:p,length:"5"},
+    {path:p,encoding:"rot13"},{path:p,wait_seconds:13},
+    {path:p,run_as:"system"},{path:p,payload:{script:"whoami"}}
+  ]) assert.equal(validDirectFileLinesCall(args),false,JSON.stringify(args));
+  assert.throws(()=>directFileLinesToWindowsCall({path:"relative"}),TypeError);
+});
+test("typed code search binds exact query and pagination to native owner agent",()=>{
+  const path=String.raw`D:\项目\代码`;
+  const query="file_read_lines";
+  assert.equal(DIRECT_CODE_SEARCH_TOOL.name,"search_code");
+  assert.equal(DIRECT_CODE_SEARCH_TOOL.annotations.readOnlyHint,true);
+  assert.equal(DIRECT_CODE_SEARCH_TOOL.annotations.destructiveHint,false);
+  assert.deepEqual(DIRECT_CODE_SEARCH_TOOL.securitySchemes,
+    [{type:"oauth2",scopes:["openid","email"]}]);
+  assert.equal(validDirectCodeSearchCall({path,query,use_regex:true,filename_glob:"*.py",offset:20,limit:2}),true);
+  assert.deepEqual(directCodeSearchToWindowsCall({path,query,use_regex:true,filename_glob:"*.py",offset:20,limit:2,wait_seconds:3}),
+    {operation:"code_search",payload:{path,query,use_regex:true,case_sensitive:false,filename_glob:"*.py",offset:20,limit:2},wait_seconds:3});
+  assert.deepEqual(directCodeSearchToWindowsCall({path,query}),
+    {operation:"code_search",payload:{path,query,use_regex:false,case_sensitive:false,filename_glob:"",offset:0,limit:50},wait_seconds:8});
+});
+test("code search never forwards arbitrary shell, unsupported flags or unbounded input",()=>{
+  const p="D:\\projects",query="needle";
+  for(const args of [
+    null,{},[],{path:p},{path:p,query:""},{path:"/etc/passwd",query},
+    {path:String.raw`\\?\C:\Windows`,query},
+    {path:p,query,limit:0},{path:p,query,limit:201},
+    {path:p,query,offset:-1},{path:p,query,offset:1000001},
+    {path:p,query,use_regex:"true"},{path:p,query,case_sensitive:1},
+    {path:p,query,filename_glob:5},{path:p,query,wait_seconds:20},
+    {path:p,query,run_as:"system"},
+    {path:p,query:"a".repeat(1025)}
+  ]) assert.equal(validDirectCodeSearchCall(args),false,JSON.stringify(args).slice(0,150));
+});
+test("typed read-only tools preserve pending task IDs and never submit twice",async()=>{
+  const paths=[
+    directFileLinesToWindowsCall({path:"D:\\projects\\readme.txt",offset:0,length:10,wait_seconds:0}),
+    directCodeSearchToWindowsCall({path:"D:\\projects",query:"test",limit:2,wait_seconds:0})
+  ];
+  for(const request of paths){
+    const calls=[];
+    const r=await runWindowsOperation("Bearer mocked",request,{
+      invoke:async(_,name,args)=>{calls.push({name,args});return {value:queued};}
+    });
+    assert.equal(r.value.command_id,91);
+    assert.equal(r.value.nonce,nonce);
+    assert.equal(r.value.terminal,false);
+    assert.equal(calls.length,1);
+    assert.equal(calls[0].name,"submit_windows_operation");
+    assert.deepEqual(calls[0].args,{operation:request.operation,payload:request.payload});
+  }
 });

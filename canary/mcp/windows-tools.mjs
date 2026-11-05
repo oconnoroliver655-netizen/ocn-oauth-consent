@@ -156,6 +156,96 @@ export function directFileReadToWindowsCall(args){
     wait_seconds:args.wait_seconds??8};
 }
 
+// Typed read-only tools reuse the exact authenticated native Windows agent.
+// No shell fallback, new service, or alternate privilege plane is introduced.
+const TEXT_ENCODINGS=new Set(["utf-8","utf-8-sig","gb18030","utf-16","utf-16-le","utf-16-be","latin-1"]);
+function validReadOnlyPath(value){
+  return typeof value==="string" && value.length>=3 && value.length<=4096 &&
+    /^[A-Za-z]:[\\/]/.test(value) && !/[\x00-\x1f\x7f]/.test(value);
+}
+function validWait(args){
+  return args.wait_seconds===undefined ||
+    (Number.isSafeInteger(args.wait_seconds) &&
+     args.wait_seconds>=0 && args.wait_seconds<=12);
+}
+export const DIRECT_FILE_LINES_TOOL={
+  name:"read_file_lines",
+  description:"Read a bounded page of lines from an absolute Windows file using OCN's owner-bound native file_read_lines operation. offset is a zero-based line index; a negative offset requests trailing lines under the installed agent's existing semantics. Returns content, total_lines and next_offset when completed, or the original command_id/nonce for polling. Never resubmit on timeout.",
+  inputSchema:{type:"object",properties:{
+    path:{type:"string",minLength:3,maxLength:4096},
+    offset:{type:"integer",minimum:-1000,maximum:1000000},
+    length:{type:"integer",minimum:1,maximum:1000},
+    encoding:{type:"string",enum:[...TEXT_ENCODINGS]},
+    wait_seconds:{type:"integer",minimum:0,maximum:12}
+  },required:["path"],additionalProperties:false},
+  securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
+  annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
+};
+export function validDirectFileLinesCall(args){
+  if(!args||typeof args!=="object"||Array.isArray(args))return false;
+  if(Object.keys(args).some(k=>!["path","offset","length","encoding","wait_seconds"].includes(k)))
+    return false;
+  if(!validReadOnlyPath(args.path)||!validWait(args))return false;
+  if(args.offset!==undefined && (!Number.isSafeInteger(args.offset)||
+     args.offset< -1000||args.offset>1000000))return false;
+  if(args.length!==undefined && (!Number.isSafeInteger(args.length)||
+     args.length<1||args.length>1000))return false;
+  if(args.encoding!==undefined && !TEXT_ENCODINGS.has(args.encoding))return false;
+  return true;
+}
+export function directFileLinesToWindowsCall(args){
+  if(!validDirectFileLinesCall(args))throw new TypeError("Invalid line read arguments");
+  return {operation:"file_read_lines",payload:{
+    path:args.path,offset:args.offset??0,length:args.length??100,
+    encoding:args.encoding??"utf-8"
+  },wait_seconds:args.wait_seconds??8};
+}
+
+export const DIRECT_CODE_SEARCH_TOOL={
+  name:"search_code",
+  description:"Search source/text under one absolute Windows file or directory using the existing owner-authorized native code_search operation. Supports literal or regex query, case sensitivity, filename glob and pagination. The Windows Agent enforces allowed paths and resource limits. Returns verified matches when completed or the original pollable command_id/nonce; never resubmits automatically.",
+  inputSchema:{type:"object",properties:{
+    path:{type:"string",minLength:3,maxLength:4096},
+    query:{type:"string",minLength:1,maxLength:1024},
+    use_regex:{type:"boolean"},
+    case_sensitive:{type:"boolean"},
+    filename_glob:{type:"string",maxLength:256},
+    offset:{type:"integer",minimum:0,maximum:1000000},
+    limit:{type:"integer",minimum:1,maximum:200},
+    wait_seconds:{type:"integer",minimum:0,maximum:12}
+  },required:["path","query"],additionalProperties:false},
+  securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
+  annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
+};
+export function validDirectCodeSearchCall(args){
+  if(!args||typeof args!=="object"||Array.isArray(args))return false;
+  if(Object.keys(args).some(k=>!["path","query","use_regex","case_sensitive",
+      "filename_glob","offset","limit","wait_seconds"].includes(k)))return false;
+  if(!validReadOnlyPath(args.path)||!validWait(args) ||
+     typeof args.query!=="string"||args.query.length<1||args.query.length>1024 ||
+     /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(args.query))return false;
+  for(const flag of ["use_regex","case_sensitive"])
+    if(args[flag]!==undefined && typeof args[flag]!=="boolean")return false;
+  if(args.filename_glob!==undefined &&
+     (typeof args.filename_glob!=="string"||args.filename_glob.length>256||
+      /[\x00-\x1f\x7f]/.test(args.filename_glob)))return false;
+  if(args.offset!==undefined && (!Number.isSafeInteger(args.offset)||
+     args.offset<0||args.offset>1000000))return false;
+  if(args.limit!==undefined && (!Number.isSafeInteger(args.limit)||
+     args.limit<1||args.limit>200))return false;
+  return true;
+}
+export function directCodeSearchToWindowsCall(args){
+  if(!validDirectCodeSearchCall(args))throw new TypeError("Invalid code search arguments");
+  return {operation:"code_search",payload:{
+    path:args.path,query:args.query,
+    use_regex:args.use_regex??false,
+    case_sensitive:args.case_sensitive??false,
+    filename_glob:args.filename_glob??"",
+    offset:args.offset??0,limit:args.limit??50
+  },wait_seconds:args.wait_seconds??8};
+}
+
 // Discoverable alias for the existing owner-bound SYSTEM execution plane.
 // It adds no elevated capability: the generic submit_windows_operation already
 // supports this exact run_as value. Authentication and queue policy are unchanged.
