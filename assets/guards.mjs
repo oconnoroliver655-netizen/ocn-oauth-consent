@@ -45,6 +45,21 @@ export function matchingCallback(value, approved, allowOAuthParams = true) {
   } catch { return false; }
 }
 
+// Only a complete authorization-code callback may finish an approval.
+// This is a structural check; the OAuth client and server still validate
+// the state, PKCE code and actual identity.
+export function classifyOAuthCallback(value, approved) {
+  if (!matchingCallback(value, approved, true)) return null;
+  const params = new URL(value).searchParams;
+  const state = params.getAll("state");
+  const code = params.getAll("code");
+  const error = params.getAll("error");
+  if (state.length !== 1 || !state[0] || state[0].length > 2048) return null;
+  if (code.length === 1 && code[0] && error.length === 0) return "approved";
+  if (error.length === 1 && error[0] && code.length === 0) return "denied";
+  return null;
+}
+
 export function isOwner(user, config) {
   return Boolean(isConfigured(config) && user && typeof user === "object" &&
     user.id === config.ownerUserId);
