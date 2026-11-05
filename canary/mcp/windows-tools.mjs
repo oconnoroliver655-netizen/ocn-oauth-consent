@@ -56,7 +56,7 @@ export function validWindowsCall(tool,args){
        validBrowserPayload(args.operation,args.payload));
   return false;
 }
-export async function callWindowsOperation(bearer,tool,args,{timeout_ms=30000}={}){
+export async function callWindowsOperation(bearer,tool,args,{timeout_ms=30000,fetchFn=fetch}={}){
   if(typeof bearer!=="string"||!bearer.startsWith("Bearer ")||bearer.length>8200)
     return {unauthorized:true};
   if(!validWindowsCall(tool,args))return {error:"Invalid Windows operation arguments"};
@@ -64,7 +64,7 @@ export async function callWindowsOperation(bearer,tool,args,{timeout_ms=30000}={
     {action:tool,operation:args.operation,payload:args.payload}:
     {action:tool,command_id:args.command_id,nonce:args.nonce};
   try{
-    const r=await fetch(EDGE,{method:"POST",
+    const r=await fetchFn(EDGE,{method:"POST",
       headers:{"authorization":bearer,"content-type":"application/json"},
       body:JSON.stringify(payload),signal:AbortSignal.timeout(
         Number.isSafeInteger(timeout_ms)?Math.min(30000,Math.max(100,timeout_ms)):30000)});
