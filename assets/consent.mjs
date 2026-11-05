@@ -124,7 +124,7 @@ async function main() {
   }
 
   form.hidden = false;
-  report("Sign in with your registered email. Keep this page open while reading the code in Gmail.");
+  report("Sign in with your registered email. Keep this page open while checking Gmail.");
   const emailInput = document.getElementById("email");
   const send = document.getElementById("send");
   const codeInput = document.getElementById("code");
@@ -138,7 +138,7 @@ async function main() {
     const email = String(emailInput.value || "").trim();
     if (!email || email.length > 254) return;
     send.disabled = true; // Only one email per page; never auto-resend.
-    report("Requesting a one-time email code…");
+    report("Requesting sign-in email…");
     try {
       const { error } = await sb.auth.signInWithOtp({
         email,
