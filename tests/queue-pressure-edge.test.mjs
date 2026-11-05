@@ -150,3 +150,40 @@ test("owner Edge only admits bounded non-cursor session output reads",()=>{
   assert.ok(!validator.includes('payload.run_as'));
   assert.ok(index.indexOf('if (!(await authenticated(')<index.indexOf('if(action==="submit_windows_operation")'));
 });
+
+test("C5 owner-only queued cancellation performs exactly one CAS PATCH",()=>{
+  const index=readFileSync(new URL("../supabase/functions/ocn-owner-health-dispatch/index.ts",
+    import.meta.url),"utf8");
+  const start=index.indexOf("async function cancelQueuedWindows(");
+  const end=index.indexOf("\nasync function pollWindows(",start);
+  assert.ok(start>0 && end>start);
+  const cancel=index.slice(start,end);
+  assert.ok(cancel.includes("validCancelReference(input)"));
+  assert.ok(cancel.includes("queuedCancelFilter(input,OWNER,DEVICE)"));
+  assert.equal((cancel.match(/method:"PATCH"/g)||[]).length,1);
+  assert.ok(cancel.includes('headers:serverHeaders("return=representation")'));
+  assert.ok(cancel.includes('status:"cancelled"'));
+  assert.ok(cancel.includes('error:"QUEUED_OWNER_CANCELLED"'));
+  assert.ok(cancel.includes('classifyCancelAfterRace(rows[0],input,OWNER,DEVICE)'));
+  assert.ok(cancel.includes('response(classified.ok?200:409,classified)'));
+  assert.ok(!cancel.includes('status:"claimed"'));
+  assert.ok(!cancel.includes('run_as'));
+  assert.ok(!cancel.includes('method:"DELETE"'));
+  assert.ok(!cancel.includes("payload:row"));
+});
+test("C5 cancellation requires the same signed owner OAuth and exact reference",()=>{
+  const index=readFileSync(new URL("../supabase/functions/ocn-owner-health-dispatch/index.ts",
+    import.meta.url),"utf8");
+  const auth=index.indexOf('if (!(await authenticated(');
+  const action=index.indexOf('if(action==="cancel_queued_windows_operation")');
+  assert.ok(auth>0 && action>auth);
+  assert.ok(index.includes('action === "cancel_queued_windows_operation" && keys === "action,command_id,nonce"'));
+  assert.ok(index.includes('if(row.status==="cancelled" && row.error==="QUEUED_OWNER_CANCELLED")'));
+  assert.ok(index.includes('execution_state:"CANCELLED_BEFORE_CLAIM"'));
+  assert.ok(index.includes('cancelled_before_claim:true'));
+  assert.ok(index.includes('"claimed","uploading"'));
+  const server=readFileSync(new URL("../canary/mcp/server.mjs",import.meta.url),"utf8");
+  assert.ok(server.includes('"cancel_queued_windows_operation"].includes(tool)'));
+  assert.ok(server.includes('result.conflict||result.uncertain'));
+  assert.ok(server.includes('structuredContent:receipt,isError:true'));
+});
