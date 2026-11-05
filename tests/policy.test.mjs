@@ -137,10 +137,11 @@ test("consent uses in-page email OTP without cross-app Magic Link navigation", (
   assert.match(js,/verifyOtp\(\{ email: requestedEmail, token, type: "email" \}\)/);
   assert.match(js,/signInWithOtp\(\{/);
   assert.match(js,/shouldCreateUser: false/);
-  assert.match(js,/detectSessionInUrl: false/);
+  assert.match(js,/detectSessionInUrl: true/);
   assert.match(js,/attempts >= 3/);
   assert.match(js,/classifyOAuthCallback/);
-  assert.doesNotMatch(js,/emailRedirectTo:|window\.location\.search\s*=|innerHTML\s*=/);
+  assert.match(js,/emailRedirectTo: returnToConsent/);
+  assert.doesNotMatch(js,/window\.location\.search\s*=|innerHTML\s*=/);
   const html=readFileSync(new URL("../oauth/consent/index.html",import.meta.url),"utf8");
   assert.match(html,/form id="otp" hidden/);
   assert.match(html,/id="code"[^>]+autocomplete="one-time-code"/);
