@@ -490,7 +490,7 @@ async function handle(req,res){
     if(result.value){
       const receipt=result.value;
       const failed=receipt.terminal===true &&
-        (receipt.status!=="completed" || receipt.execution_state==="FAILED");
+        !(receipt.status==="completed" && receipt.execution_state==="SUCCEEDED");
       return respond(res,200,ok(id,{
         content:[{type:"text",text:JSON.stringify(receipt)}],
         structuredContent:receipt,isError:failed
