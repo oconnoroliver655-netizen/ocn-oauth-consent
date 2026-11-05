@@ -36,3 +36,22 @@ node --test tests/policy.test.mjs
 ```
 
 Production operations must not rely on public JavaScript checks as an authentication or authorization boundary.
+
+## Same-browser OTP rollout (2026-11-05)
+
+The consent UI now verifies an **email code in the same browser tab**, avoiding a Gmail → other browser → ChatGPT app hop during Supabase sign-in. This does not change the pinned owner, registered callback, OAuth scopes or Windows security boundary.
+
+**DEPLOYMENT GATE:** Supabase `signInWithOtp` sends Magic Links by default. Before merging the UI into GitHub Pages, open the **Supabase Dashboard → Authentication → Email Templates → Magic Link** template and replace the existing one-click link with a numeric code. Do not include `{{ .ConfirmationURL }}`.
+
+```html
+<h2>OCN owner sign-in code</h2>
+<p>Enter this one-time code into the OCN authorization page:</p>
+<p><strong>{{ .Token }}</strong></p>
+<p>If you did not request this code, ignore this email.</p>
+```
+
+The UI calls `verifyOtp({ email, token, type: "email" })`, accepts 6–8 digits, verifies the owner UUID from a fresh `getUser()`, and resumes the original `authorization_id`. Email sends are restricted to one per page and code checks to three attempts per page. Never record an OTP, Magic Link, OAuth code or token in a repo or diagnostic log.
+
+**Acceptance before release:** check the project email template actually delivers numeric codes without an actionable one-click link; run `node --check assets/consent.mjs && node --check assets/guards.mjs && node --test tests/policy.test.mjs`; validate wrong-code, wrong-owner, missing-code and duplicate-state rejection; then perform one authorized real login in a single browser context and independently verify ChatGPT reports Connected and the OAuth code was exchanged. A server-side `owner_verified=true` probe alone is not proof of ChatGPT's new grant.
+
+Missing or malformed OAuth callbacks now fail closed instead of silently redirecting. Mobile browser-to-app token-state handoff problems can still occur after a valid callback; they require a separate ChatGPT client session check.
