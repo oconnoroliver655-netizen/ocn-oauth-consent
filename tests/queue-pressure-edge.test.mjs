@@ -130,3 +130,23 @@ test("expired claimed command is a bounded needs_review receipt, never a false 4
   for(const verb of ["POST","PATCH","DELETE"])
     assert.ok(!poll.includes('method:"'+verb+'"'));
 });
+
+test("owner Edge only admits bounded non-cursor session output reads",()=>{
+  const index=readFileSync(new URL("../supabase/functions/ocn-owner-health-dispatch/index.ts",
+    import.meta.url),"utf8");
+  const start=index.indexOf("function validWindowsPayload(");
+  const end=index.indexOf("\nasync function submitWindows(",start);
+  assert.ok(start>0 && end>start);
+  const validator=index.slice(start,end);
+  assert.ok(index.includes('"process_sessions","process_read"'));
+  assert.ok(index.includes('"terminal_sessions","terminal_read"'));
+  assert.ok(validator.includes('operation==="process_read"||operation==="terminal_read"'));
+  assert.ok(validator.includes('payload.offset>=0 && payload.offset<=1000000000'));
+  assert.ok(validator.includes('payload.max_bytes>=1 && payload.max_bytes<=65536'));
+  assert.ok(validator.includes('payload.wait_ms===0'));
+  assert.ok(validator.includes('NONCE.test(payload[idField])'));
+  assert.ok(validator.includes('keys.length===4'));
+  assert.ok(validator.includes('keys.every(k=>allowed.has(k))'));
+  assert.ok(!validator.includes('payload.run_as'));
+  assert.ok(index.indexOf('if (!(await authenticated(')<index.indexOf('if(action==="submit_windows_operation")'));
+});
