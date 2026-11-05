@@ -181,8 +181,8 @@ async function pollHealth(input:any): Promise<Response> {
 const WINDOWS_OPS = new Set([
   "file_read","file_read_lines","file_write","file_append",
   "powershell","exec","desktop_health","window_list","screenshot",
-  "uia_tree","code_search","audit_recent","process_sessions",
-  "terminal_sessions","desktop_lease_status",
+  "uia_tree","code_search","audit_recent","process_sessions","process_read",
+  "terminal_sessions","terminal_read","desktop_lease_status",
   ...BROWSER_OPERATIONS
 ]);
 const TERMINAL = new Set(["completed","failed","cancelled","expired"]);
@@ -191,6 +191,19 @@ function validWindowsPayload(operation:string, payload:any):boolean {
       Array.isArray(payload)) return false;
   const keys=Object.keys(payload);
   if(operation.startsWith("browser_"))return validBrowserPayload(operation,payload);
+  // Existing native session output is read by an exact, non-cursor-moving
+  // offset. Never accept a PID, negative offset, wait, input or launcher.
+  if(operation==="process_read"||operation==="terminal_read"){
+    const idField=operation==="process_read"?"session_id":"terminal_id";
+    const allowed=new Set([idField,"offset","max_bytes","wait_ms"]);
+    return keys.length===4 && keys.every(k=>allowed.has(k)) &&
+      typeof payload[idField]==="string" && NONCE.test(payload[idField]) &&
+      Number.isSafeInteger(payload.offset) &&
+      payload.offset>=0 && payload.offset<=1000000000 &&
+      Number.isSafeInteger(payload.max_bytes) &&
+      payload.max_bytes>=1 && payload.max_bytes<=65536 &&
+      payload.wait_ms===0;
+  }
   if(operation.startsWith("file_") &&
     (typeof payload.path!=="string" || payload.path.length<3 ||
       !/^[a-zA-Z]:/.test(payload.path) ||
