@@ -85,7 +85,9 @@ export const RUN_WINDOWS_TOOL={
   securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
   annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}
 };
-const TERMINAL_STATES=new Set(["completed","failed","cancelled","expired"]);
+// Queue terminal does not mean execution success. needs_review is an
+// outcome-uncertain quarantine state and must never be automatically retried.
+const TERMINAL_STATES=new Set(["completed","failed","cancelled","expired","needs_review"]);
 export function validRunWindowsCall(args){
   if(!args||typeof args!=="object"||Array.isArray(args))return false;
   if(Object.keys(args).some(k=>!["operation","payload","wait_seconds"].includes(k)))return false;
