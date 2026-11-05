@@ -240,9 +240,12 @@ async function submitWindows(input:any):Promise<Response> {
 // status=queued claim; a claimed command is never marked cancelled here.
 // Repeat requests resolve by the original command_id/nonce, not resubmission.
 async function cancelQueuedWindows(input:any):Promise<Response>{
-  if(!validCancelReference(input))
+  // The Edge JSON envelope includes action; validation operates on the exact
+  // immutable command reference after its strict three-field action gate.
+  const ref={command_id:input.command_id,nonce:input.nonce};
+  if(!validCancelReference(ref))
     return response(400,{ok:false,error:"Invalid command reference"});
-  const q=queuedCancelFilter(input,OWNER,DEVICE);
+  const q=queuedCancelFilter(ref,OWNER,DEVICE);
   const r=await fetch(SUPABASE+"/rest/v1/local_control_commands?"+q.toString(),{
     method:"PATCH",headers:serverHeaders("return=representation"),
     body:JSON.stringify({status:"cancelled",completed_at:new Date().toISOString(),
@@ -277,7 +280,7 @@ async function cancelQueuedWindows(input:any):Promise<Response>{
     command_id:input.command_id,execution_outcome:"UNKNOWN",
     retry_same_reference:true});
   if(rows.length!==1)return response(404,{ok:false,error:"Command not found"});
-  const classified=classifyCancelAfterRace(rows[0],input,OWNER,DEVICE);
+  const classified=classifyCancelAfterRace(rows[0],ref,OWNER,DEVICE);
   if(!classified)return response(404,{ok:false,error:"Command not found"});
   return response(classified.ok?200:409,classified);
 }
