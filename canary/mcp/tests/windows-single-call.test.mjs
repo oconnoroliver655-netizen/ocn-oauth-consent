@@ -4,7 +4,8 @@ import {RUN_WINDOWS_TOOL,validRunWindowsCall,runWindowsOperation,
   DIRECT_FILE_READ_TOOL,validDirectFileReadCall,directFileReadToWindowsCall,
   DIRECT_FILE_LINES_TOOL,validDirectFileLinesCall,directFileLinesToWindowsCall,
   DIRECT_CODE_SEARCH_TOOL,validDirectCodeSearchCall,directCodeSearchToWindowsCall,
-  DIRECT_SESSION_TOOLS,validDirectSessionCall,directSessionToWindowsCall}
+  DIRECT_SESSION_TOOLS,validDirectSessionCall,directSessionToWindowsCall,
+  SESSION_READ_TOOLS,validSessionReadCall,sessionReadToWindowsCall}
   from "../windows-tools.mjs";
 
 const nonce="a".repeat(32);
@@ -290,5 +291,61 @@ test("session listing follows one native queued submit, preserving original rece
     assert.equal(result.value.terminal,false);
     assert.deepEqual(calls,[{tool:"submit_windows_operation",
       payload:{operation:args.operation,payload:{}}}]);
+  }
+});
+
+
+test("C3 session output readers are owner-bound and explicitly non-cursor-moving",()=>{
+  assert.deepEqual(SESSION_READ_TOOLS.map(t=>t.name),
+    ["read_process_output","read_terminal_output"]);
+  for(const tool of SESSION_READ_TOOLS){
+    const field=tool.name==="read_process_output"?"session_id":"terminal_id";
+    assert.equal(tool.annotations.readOnlyHint,true);
+    assert.equal(tool.annotations.destructiveHint,false);
+    assert.deepEqual(tool.securitySchemes,[{type:"oauth2",scopes:["openid","email"]}]);
+    assert.equal(tool.inputSchema.properties.offset.minimum,0);
+    assert.equal(tool.inputSchema.properties.max_bytes.maximum,65536);
+    const input={[field]:nonce,offset:19,max_bytes:4096,wait_seconds:2};
+    assert.equal(validSessionReadCall(tool.name,input),true);
+    assert.deepEqual(sessionReadToWindowsCall(tool.name,input),{
+      operation:field==="session_id"?"process_read":"terminal_read",
+      payload:{[field]:nonce,offset:19,max_bytes:4096,wait_ms:0},wait_seconds:2
+    });
+    assert.deepEqual(sessionReadToWindowsCall(tool.name,{[field]:nonce}),{
+      operation:field==="session_id"?"process_read":"terminal_read",
+      payload:{[field]:nonce,offset:0,max_bytes:16384,wait_ms:0},wait_seconds:8
+    });
+  }
+});
+test("C3 session output readers reject pid, negative cursor, privileged and side-effect fields",()=>{
+  for(const tool of SESSION_READ_TOOLS){
+    const field=tool.name==="read_process_output"?"session_id":"terminal_id";
+    for(const bad of [null,[],{}, {[field]:"1234"},{[field]:"ABC".repeat(11)},
+      {[field]:"../session"}, {[field]:nonce,offset:-1},
+      {[field]:nonce,offset:1.3},{[field]:nonce,offset:1000000001},
+      {[field]:nonce,max_bytes:0},{[field]:nonce,max_bytes:65537},
+      {[field]:nonce,wait_seconds:13},{[field]:nonce,wait_seconds:-1},
+      {[field]:nonce,run_as:"system"},{[field]:nonce,pid:1234},
+      {[field]:nonce,wait_ms:5000},{[field]:nonce,data:"cmd"},
+      {[field]:nonce,force:true},{[field]:nonce,operation:"terminal_terminate"}]){
+      assert.equal(validSessionReadCall(tool.name,bad),false,JSON.stringify(bad));
+    }
+    assert.throws(()=>sessionReadToWindowsCall(tool.name,{[field]:nonce,offset:-1}),TypeError);
+  }
+  assert.equal(validSessionReadCall("read_arbitrary_session",{session_id:nonce}),false);
+});
+test("C3 output reads never resubmit and retain the original pending task",async()=>{
+  for(const tool of SESSION_READ_TOOLS){
+    const field=tool.name==="read_process_output"?"session_id":"terminal_id";
+    const request=sessionReadToWindowsCall(tool.name,{[field]:nonce,wait_seconds:0});
+    const called=[];
+    const r=await runWindowsOperation("Bearer mocked",request,{
+      invoke:async(_,name,args)=>{called.push({name,args});return {value:queued};}
+    });
+    assert.equal(r.value.command_id,91);
+    assert.equal(r.value.nonce,nonce);
+    assert.equal(r.value.terminal,false);
+    assert.deepEqual(called,[{name:"submit_windows_operation",
+      args:{operation:request.operation,payload:request.payload}}]);
   }
 });
