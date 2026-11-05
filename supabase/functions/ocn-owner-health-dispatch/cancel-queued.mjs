@@ -50,7 +50,9 @@ export function classifyCancelAfterRace(row,input,owner,device){
 // the Edge handler; neither the decision function nor its tests access SQL.
 // A returned UNKNOWN is not proof the cancellation did or did not commit.
 export async function resolveQueuedCancel(input,owner,device,{patch,lookup}={}){
-  if(!validCancelReference(input))
+  if(!validCancelReference(input)||
+     typeof owner!=="string"||owner.length===0||
+     typeof device!=="string"||device.length===0)
     return {http_status:400,body:{ok:false,error:"Invalid command reference"}};
   if(typeof patch!=="function"||typeof lookup!=="function")
     throw new TypeError("Cancellation adapters must be provided");
