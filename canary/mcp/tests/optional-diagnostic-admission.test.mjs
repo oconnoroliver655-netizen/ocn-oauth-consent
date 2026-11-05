@@ -68,7 +68,14 @@ test("contradictory admission signal refuses optional work",()=>{
 });
 test("the original owner-authorized submit and poll code remains intact",()=>{
   const source=readFileSync(new URL("../server.mjs",import.meta.url),"utf8");
-  assert.ok(source.includes('if (oauthProbePath && (tool==="submit_windows_operation" || tool==="poll_windows_operation"))'));
+  const gatewayStart=source.indexOf("  // Signed Windows queue submit, poll or race-safe queued cancellation.");
+  const gatewayEnd=source.indexOf("  // CI Guard is owner-bound",gatewayStart);
+  assert.ok(gatewayStart>=0 && gatewayEnd>gatewayStart);
+  const gateway=source.slice(gatewayStart,gatewayEnd);
+  assert.ok(gateway.includes('"submit_windows_operation","poll_windows_operation"'));
+  assert.ok(gateway.includes('callWindowsOperation(String(req.headers.authorization||""),tool,args)'));
+  assert.ok(gateway.includes('if(result.unauthorized)'));
+  assert.ok(gateway.includes('if(result.value)'));
   assert.ok(source.includes('if (oauthProbePath && tool==="submit_optional_diagnostic")'));
   assert.ok(source.includes('const pressure=await callQueuePressureEdge(bearer);'));
   assert.ok(source.includes('const plan=planOptionalDiagnosticAdmission(pressure.value);'));
