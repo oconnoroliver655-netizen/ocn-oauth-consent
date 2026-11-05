@@ -276,7 +276,7 @@ async function handle(req,res){
       (exactEmpty || (keys==="max_cancellations" &&
         Number.isInteger(args.max_cancellations) && args.max_cancellations>=1 &&
         args.max_cancellations<=25)) :
-    (oauthProbePath && (tool==="submit_windows_operation" || tool==="poll_windows_operation")) ?
+    (oauthProbePath && ["submit_windows_operation","poll_windows_operation","cancel_queued_windows_operation"].includes(tool)) ?
       validWindowsCall(tool,args) :
     (oauthProbePath && tool==="run_windows_operation") ? validRunWindowsCall(args) :
     (oauthProbePath && tool==="read_file") ? validDirectFileReadCall(args) :
@@ -512,10 +512,19 @@ async function handle(req,res){
       content:[{type:"text",text:result.error||"Windows task unavailable"}],isError:true
     }));
   }
-  // Submit to the previously bound Windows Agent, with signed owner OAuth.
-  if (oauthProbePath && (tool==="submit_windows_operation" || tool==="poll_windows_operation")){
+  // Signed Windows queue submit, poll or race-safe queued cancellation.
+  if (oauthProbePath && ["submit_windows_operation","poll_windows_operation",
+      "cancel_queued_windows_operation"].includes(tool)){
     const result=await callWindowsOperation(String(req.headers.authorization||""),tool,args);
     if(result.unauthorized)return respond(res,200,ok(id,ownerChallenge()));
+    // A lost cancellation race or uncertain network reply is never a success.
+    if(result.conflict||result.uncertain){
+      const receipt=result.conflict||result.uncertain;
+      return respond(res,200,ok(id,{
+        content:[{type:"text",text:JSON.stringify(receipt)}],
+        structuredContent:receipt,isError:true
+      }));
+    }
     if(result.value)return respond(res,200,ok(id,{
       content:[{type:"text",text:JSON.stringify(result.value)}],
       structuredContent:result.value,isError:false

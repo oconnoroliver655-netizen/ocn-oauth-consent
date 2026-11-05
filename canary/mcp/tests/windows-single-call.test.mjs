@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {RUN_WINDOWS_TOOL,validRunWindowsCall,runWindowsOperation,
+import {WINDOWS_TOOLS,validWindowsCall,callWindowsOperation,
+  RUN_WINDOWS_TOOL,validRunWindowsCall,runWindowsOperation,
   DIRECT_FILE_READ_TOOL,validDirectFileReadCall,directFileReadToWindowsCall,
   DIRECT_FILE_LINES_TOOL,validDirectFileLinesCall,directFileLinesToWindowsCall,
   DIRECT_CODE_SEARCH_TOOL,validDirectCodeSearchCall,directCodeSearchToWindowsCall,
@@ -347,5 +348,73 @@ test("C3 output reads never resubmit and retain the original pending task",async
     assert.equal(r.value.terminal,false);
     assert.deepEqual(called,[{name:"submit_windows_operation",
       args:{operation:request.operation,payload:request.payload}}]);
+  }
+});
+
+
+test("C5 queued cancel is discoverable, owner protected and not annotated read-only",()=>{
+  const tool=WINDOWS_TOOLS.find(x=>x.name==="cancel_queued_windows_operation");
+  assert.ok(tool);
+  assert.equal(tool.annotations.readOnlyHint,false);
+  assert.equal(tool.annotations.destructiveHint,true);
+  assert.deepEqual(tool.securitySchemes,[{type:"oauth2",scopes:["openid","email"]}]);
+  assert.equal(validWindowsCall(tool.name,{command_id:91,nonce}),true);
+  for(const invalid of [{command_id:91,nonce:"bad"},
+    {command_id:91,nonce,run_as:"system"},{command_id:0,nonce},
+    {command_id:91.5,nonce},{nonce},{command_id:91,nonce,operation:"powershell"}])
+    assert.equal(validWindowsCall(tool.name,invalid),false,JSON.stringify(invalid));
+});
+test("C5 cancellation sends exactly the reference through the signed Edge route",async()=>{
+  const calls=[];
+  const args={command_id:91,nonce};
+  const expected={ok:true,command_id:91,status:"cancelled",cancelled:true,
+    already_cancelled:false,cancellation_scope:"queued_only",execution_outcome:"NOT_STARTED"};
+  const result=await callWindowsOperation("Bearer synthetic","cancel_queued_windows_operation",args,{
+    fetchFn:async (url,init)=>{
+      calls.push({url,method:init.method,body:JSON.parse(init.body),
+        authorization:init.headers.authorization});
+      return {status:200,ok:true,json:async()=>expected};
+    }
+  });
+  assert.deepEqual(result,{value:expected});
+  assert.equal(calls.length,1);
+  assert.deepEqual(calls[0].body,{action:"cancel_queued_windows_operation",...args});
+  assert.equal(calls[0].method,"POST");
+  assert.equal(calls[0].authorization,"Bearer synthetic");
+});
+test("C5 claimed/cancel-too-late receipt is conflict, never a false success",async()=>{
+  const args={command_id:91,nonce};
+  const claimed={ok:false,command_id:91,status:"claimed",cancelled:false,
+    error:"CANCEL_TOO_LATE",execution_outcome:"UNKNOWN"};
+  const r=await callWindowsOperation("Bearer synthetic","cancel_queued_windows_operation",args,{
+    fetchFn:async()=>({status:409,ok:false,json:async()=>claimed})
+  });
+  assert.deepEqual(r,{conflict:claimed});
+  assert.notEqual(r.value?.status,"cancelled");
+});
+test("C5 network ambiguity preserves original task identity without resubmission",async()=>{
+  const args={command_id:91,nonce};
+  let sends=0;
+  const result=await callWindowsOperation("Bearer synthetic","cancel_queued_windows_operation",args,{
+    fetchFn:async()=>{sends++;throw new Error("connection lost after commit");}
+  });
+  assert.equal(sends,1);
+  assert.equal(result.uncertain.command_id,91);
+  assert.equal(result.uncertain.cancelled,false);
+  assert.equal(result.uncertain.execution_outcome,"UNKNOWN");
+  assert.equal(result.uncertain.retry_same_reference,true);
+});
+test("C5 cannot forge a successful cancellation with malformed or wrong receipt",async()=>{
+  const args={command_id:91,nonce};
+  for(const body of [
+    {ok:true,command_id:92,status:"cancelled",cancelled:true},
+    {ok:true,command_id:91,status:"claimed",cancelled:true},
+    {ok:true,command_id:91,status:"cancelled",cancelled:false}
+  ]){
+    const r=await callWindowsOperation("Bearer synthetic","cancel_queued_windows_operation",args,{
+      fetchFn:async()=>({status:200,ok:true,json:async()=>body})
+    });
+    assert.equal(r.value,undefined);
+    assert.equal(r.error,"Invalid cancellation receipt");
   }
 });
