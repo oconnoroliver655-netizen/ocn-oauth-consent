@@ -11,6 +11,7 @@ const ciBackend = createCiBackend();
 // Authentication for each protected call remains in Supabase's signed ES256
 // token validator, not in client-supplied JSON or this publicly exposed host.
 import { createServer } from "node:http";
+import {summarizeSessionContext} from "./session-context-probe.mjs";
 import {createRequestTelemetry,classifyRequestOrigin} from "./request-telemetry.mjs";
 const DIRECT_BROWSER_OPERATIONS = Object.freeze([
   "browser_status","browser_connect","browser_tab_list","browser_snapshot"
@@ -93,6 +94,13 @@ function toolList(oauthProbe=false){
   if (oauthProbe) listed.push({
     name:"owner_auth_probe",
     description:"Check a signed, current owner OAuth session. Does not grant Windows tools.",
+    inputSchema:{type:"object",properties:{},additionalProperties:false},
+    securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
+    annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
+  });
+  if (oauthProbe) listed.push({
+    name:"session_context_probe",
+    description:"Owner-OAuth-protected read-only metadata diagnostic. Returns a process-scoped, keyed session correlation tag and presence flags, never raw conversation or user identifiers; client metadata is NOT provenance or authorization proof.",
     inputSchema:{type:"object",properties:{},additionalProperties:false},
     securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
     annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
@@ -281,7 +289,7 @@ async function handle(req,res){
   if (message.params.name==="ping")
     return respond(res,200,ok(id,{content:[{type:"text",text:'{"pong":true,"privileged":false}'}],
       structuredContent:{pong:true,privileged:false},isError:false}));
-  if (message.params.name==="owner_auth_probe" && oauthProbePath){
+  if (oauthProbePath && (tool==="owner_auth_probe" || tool==="session_context_probe")){
     // A real signed owner/session check is required; never accept a dummy bearer.
     // The validator is separately pinned and has NO machine-control actions.
     let verified=false;
@@ -301,6 +309,13 @@ async function handle(req,res){
       } catch {
         verified=false;
       }
+    }
+    if (verified && tool==="session_context_probe") {
+      const summary={...summarizeSessionContext(message.params._meta),owner_oauth_verified:true};
+      return respond(res,200,ok(id,{
+        content:[{type:"text",text:JSON.stringify(summary)}],
+        structuredContent:summary,isError:false
+      }));
     }
     if (verified) return respond(res,200,ok(id,{
       content:[{type:"text",text:"Verified owner OAuth session. No machine permissions."}],

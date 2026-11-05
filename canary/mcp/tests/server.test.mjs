@@ -73,7 +73,7 @@ test("OAuth test route advertises protected probe and returns MCP tool-level cha
     body:JSON.stringify({jsonrpc:"2.0",id:1,method:"tools/list",params:{}})});
   assert.equal(listing.status,200);
   const list=(await listing.json()).result.tools;
-  const baseTools=["ping","owner_auth_probe","submit_machine_health","poll_machine_health","inspect_pr529_ci","cancel_stale_pr529_ci","submit_windows_operation","poll_windows_operation"];
+  const baseTools=["ping","owner_auth_probe","session_context_probe","submit_machine_health","poll_machine_health","inspect_pr529_ci","cancel_stale_pr529_ci","submit_windows_operation","poll_windows_operation"];
   assert.deepEqual(list.slice(0,baseTools.length).map(t=>t.name),baseTools);
   const names=new Set(list.map(t=>t.name));
   for(const required of ["browser_status","browser_connect","browser_tab_list","browser_snapshot","browser_batch",
@@ -81,11 +81,15 @@ test("OAuth test route advertises protected probe and returns MCP tool-level cha
     "rea_chunk","rea_cancel","rea_list_prompts","rea_get_prompt","submit_admin_powershell","submit_routed_windows_operation"]){
     assert.ok(names.has(required),"Missing registered MCP tool: "+required);
   }
-  assert.deepEqual(list.slice(2,4).map(t=>t.annotations.destructiveHint),[false,false]);
-  assert.equal(list[4].annotations.readOnlyHint,true);
-  assert.equal(list[5].annotations.destructiveHint,true);
-  assert.equal(list[6].annotations.destructiveHint,true);
-  assert.equal(list[7].annotations.readOnlyHint,true);
+  const byName=new Map(list.map(t=>[t.name,t]));
+  for(const name of ["session_context_probe","submit_machine_health","poll_machine_health"]){
+    assert.equal(byName.get(name).annotations.destructiveHint,false);
+  }
+  assert.equal(byName.get("session_context_probe").annotations.readOnlyHint,true);
+  assert.equal(byName.get("inspect_pr529_ci").annotations.readOnlyHint,true);
+  assert.equal(byName.get("cancel_stale_pr529_ci").annotations.destructiveHint,true);
+  assert.equal(byName.get("submit_windows_operation").annotations.destructiveHint,true);
+  assert.equal(byName.get("poll_windows_operation").annotations.readOnlyHint,true);
   assert.deepEqual(list[1].securitySchemes,[{type:"oauth2",scopes:["openid","email"]}]);
   for(const auth of [{},{"authorization":"Bearer forged"}]){
     const r=await httpFetch(base+"/mcp-oauth",{method:"POST",headers:headers(auth),
@@ -101,6 +105,7 @@ test("OAuth test route advertises protected probe and returns MCP tool-level cha
 });
 test("health-only tools require signed owner and never expose file/shell",async()=>{
   for(const [name,args] of [
+    ["session_context_probe",{}],
     ["submit_machine_health",{}],
     ["poll_machine_health",{command_id:42,nonce:"a".repeat(32)}],
     ["inspect_pr529_ci",{}],

@@ -19,6 +19,9 @@ jobs:
           node --check assets/guards.mjs
           node --check assets/consent.mjs
           node --test tests/policy.test.mjs
+          node --check canary/mcp/session-context-probe.mjs
+          node --check canary/mcp/server.mjs
+          node --test tests/session-context-probe.test.mjs
       - name: Verify public static site and secret patterns
         run: |
           test -f index.html
