@@ -246,6 +246,37 @@ export function directCodeSearchToWindowsCall(args){
   },wait_seconds:args.wait_seconds??8};
 }
 
+// Read-only session inventory using the existing owner-authorized Windows
+// Agent. This does not start, stop or attach to any process/terminal.
+const SESSION_OPERATIONS=new Map([
+  ["list_process_sessions","process_sessions"],
+  ["list_terminal_sessions","terminal_sessions"]
+]);
+export const DIRECT_SESSION_TOOLS=[...SESSION_OPERATIONS.keys()].map(name=>({
+  name,
+  description:name==="list_process_sessions"
+    ?"List the existing native Windows process sessions (read only). Returns real session state only on verified completion, or the original command_id/nonce for polling. No process is started or terminated."
+    :"List the existing native Windows terminal sessions (read only). Returns real terminal state only on verified completion, or the original command_id/nonce for polling. No terminal is started or terminated.",
+  inputSchema:{type:"object",properties:{
+    wait_seconds:{type:"integer",minimum:0,maximum:12}
+  },additionalProperties:false},
+  securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
+  annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
+}));
+export function validDirectSessionCall(name,args){
+  return SESSION_OPERATIONS.has(name) && args!==null &&
+    typeof args==="object" && !Array.isArray(args) &&
+    Object.keys(args).every(k=>k==="wait_seconds") &&
+    (args.wait_seconds===undefined ||
+      (Number.isSafeInteger(args.wait_seconds) &&
+       args.wait_seconds>=0 && args.wait_seconds<=12));
+}
+export function directSessionToWindowsCall(name,args){
+  if(!validDirectSessionCall(name,args))throw new TypeError("Invalid session list arguments");
+  return {operation:SESSION_OPERATIONS.get(name),payload:{},
+    wait_seconds:args.wait_seconds??8};
+}
+
 // Discoverable alias for the existing owner-bound SYSTEM execution plane.
 // It adds no elevated capability: the generic submit_windows_operation already
 // supports this exact run_as value. Authentication and queue policy are unchanged.

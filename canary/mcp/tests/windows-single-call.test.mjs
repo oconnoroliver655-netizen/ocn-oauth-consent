@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import {RUN_WINDOWS_TOOL,validRunWindowsCall,runWindowsOperation,
   DIRECT_FILE_READ_TOOL,validDirectFileReadCall,directFileReadToWindowsCall,
   DIRECT_FILE_LINES_TOOL,validDirectFileLinesCall,directFileLinesToWindowsCall,
-  DIRECT_CODE_SEARCH_TOOL,validDirectCodeSearchCall,directCodeSearchToWindowsCall}
+  DIRECT_CODE_SEARCH_TOOL,validDirectCodeSearchCall,directCodeSearchToWindowsCall,
+  DIRECT_SESSION_TOOLS,validDirectSessionCall,directSessionToWindowsCall}
   from "../windows-tools.mjs";
 
 const nonce="a".repeat(32);
@@ -248,5 +249,46 @@ test("typed read-only tools preserve pending task IDs and never submit twice",as
     assert.equal(calls.length,1);
     assert.equal(calls[0].name,"submit_windows_operation");
     assert.deepEqual(calls[0].args,{operation:request.operation,payload:request.payload});
+  }
+});
+
+test("session inventory exposes two owner-authenticated read-only tools",()=>{
+  assert.deepEqual(DIRECT_SESSION_TOOLS.map(x=>x.name),
+    ["list_process_sessions","list_terminal_sessions"]);
+  for(const t of DIRECT_SESSION_TOOLS){
+    assert.equal(t.annotations.readOnlyHint,true);
+    assert.equal(t.annotations.destructiveHint,false);
+    assert.deepEqual(t.securitySchemes,[{type:"oauth2",scopes:["openid","email"]}]);
+    assert.equal(validDirectSessionCall(t.name,{}),true);
+    assert.deepEqual(directSessionToWindowsCall(t.name,{}),{
+      operation:t.name==="list_process_sessions"?"process_sessions":"terminal_sessions",
+      payload:{},wait_seconds:8
+    });
+    assert.equal(directSessionToWindowsCall(t.name,{wait_seconds:0}).wait_seconds,0);
+  }
+});
+test("session inventory strictly rejects extra side-effect parameters and illegal wait",()=>{
+  for(const t of ["list_process_sessions","list_terminal_sessions"]){
+    for(const args of [null,[],{script:"whoami"},{path:"C:\\"},
+      {run_as:"system"},{wait_seconds:-1},{wait_seconds:13},
+      {wait_seconds:1.5},{wait_seconds:"5"},{confirm:true}]){
+      assert.equal(validDirectSessionCall(t,args),false,JSON.stringify(args));
+    }
+    assert.throws(()=>directSessionToWindowsCall(t,{run_as:"system"}),TypeError);
+  }
+  assert.equal(validDirectSessionCall("terminate_process",{}),false);
+});
+test("session listing follows one native queued submit, preserving original receipt",async()=>{
+  for(const name of ["list_process_sessions","list_terminal_sessions"]){
+    const args=directSessionToWindowsCall(name,{wait_seconds:0});
+    const calls=[];
+    const result=await runWindowsOperation("Bearer mocked",args,{
+      invoke:async(_,tool,payload)=>{calls.push({tool,payload});return {value:queued};}
+    });
+    assert.equal(result.value.command_id,91);
+    assert.equal(result.value.nonce,nonce);
+    assert.equal(result.value.terminal,false);
+    assert.deepEqual(calls,[{tool:"submit_windows_operation",
+      payload:{operation:args.operation,payload:{}}}]);
   }
 });
