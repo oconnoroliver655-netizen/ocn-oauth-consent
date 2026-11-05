@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 import { CONFIG } from "../assets/config.mjs";
 import {
   isConfigured, getAuthorizationId, matchingCallback, isOwner,
-  authorizeDetails, returnToConsent
+  authorizeDetails, returnToConsent, classifyOAuthCallback
 } from "../assets/guards.mjs";
 
 const ID = "f".repeat(32);
@@ -113,4 +114,98 @@ test("consent HTML exposes no credentials or unsolicited network forms", () => {
   assert.match(html,/Content-Security-Policy/);
   assert.match(html,/referrer" content="no-referrer"/);
   assert.doesNotMatch(html,/Runtime API Key:|service_role|sb_secret_|password type="text"/);
+});
+
+
+test("a callback requires one state and exactly one OAuth outcome", () => {
+  const base = C.approvedRedirectUri;
+  assert.equal(classifyOAuthCallback(base+"?code=validcode&state=opaque",base),"approved");
+  assert.equal(classifyOAuthCallback(base+"?error=access_denied&state=opaque",base),"denied");
+  for (const url of [
+    base, base+"?state=opaque", base+"?code=validcode",
+    base+"?error=access_denied", base+"?code=validcode&state=",
+    base+"?code=validcode&state=s&state=t",
+    base+"?code=validcode&code=again&state=s",
+    base+"?code=validcode&error=access_denied&state=s",
+    base+"?state=s&error=access_denied&error=invalid_request",
+    "https://evil.example/connector/oauth/callback?code=c&state=s",
+    base+"?code=c&state=s&next=https://evil.example"
+  ]) assert.equal(classifyOAuthCallback(url,base),null,url);
+});
+
+test("consent uses in-page email OTP without cross-app Magic Link navigation", () => {
+  const js=readFileSync(new URL("../assets/consent.mjs",import.meta.url),"utf8");
+  assert.match(js,/verifyOtp\(\{ email: requestedEmail, token, type: "email" \}\)/);
+  assert.match(js,/signInWithOtp\(\{/);
+  assert.match(js,/shouldCreateUser: false/);
+  assert.match(js,/detectSessionInUrl: true/);
+  assert.match(js,/attempts >= 3/);
+  assert.match(js,/classifyOAuthCallback/);
+  assert.match(js,/emailRedirectTo: returnToConsent/);
+  assert.doesNotMatch(js,/window\.location\.search\s*=|innerHTML\s*=/);
+  const html=readFileSync(new URL("../oauth/consent/index.html",import.meta.url),"utf8");
+  assert.match(html,/form id="otp" hidden/);
+  assert.match(html,/id="code"[^>]+autocomplete="one-time-code"/);
+  assert.match(html,/id="verify"/);
+});
+
+
+test("in-page OTP transitions to an approved, pinned callback without a second browser", async () => {
+  const source = readFileSync(new URL("../assets/consent.mjs", import.meta.url), "utf8");
+  const body = source.slice(source.indexOf("const status = document.getElementById"));
+  const ids = ["status","signin","otp","review","previous","approve","deny","checked",
+               "continue","app-name","app-id","callback","scopes","email","send","code","verify"];
+  const dom = Object.fromEntries(ids.map(id => [id, {
+    hidden: id === "signin" || id === "otp" || id === "previous",
+    disabled: false, value: "", checked: false, textContent: "",
+    handlers: {}, addEventListener(name, handler) { this.handlers[name] = handler; },
+    focus() {}
+  }]));
+  const redirects = [];
+  const sent = [];
+  const verified = [];
+  let user = null;
+  const sb = { auth: {
+    async getUser() { return {data:{user},error:null}; },
+    async signInWithOtp(args) { sent.push(args); return {error:null}; },
+    async verifyOtp(args) { verified.push(args); user = {id:C.ownerUserId}; return {error:null}; },
+    oauth: {
+      async getAuthorizationDetails(id) {
+        assert.equal(id,ID);
+        return {data:{redirect_url:C.approvedRedirectUri+"?code=valid-code&state=opaque-state"},error:null};
+      },
+      async approveAuthorization() { throw Error("prior consent should not require reapproval"); },
+      async denyAuthorization() { throw Error("should not deny"); }
+    }
+  }};
+  const window = {
+    location: {
+      href:"https://example.github.io/ocn-oauth-consent/oauth/consent/?authorization_id="+ID,
+      search:"?authorization_id="+ID,
+      assign(url) { redirects.push(url); }
+    }
+  };
+  runInNewContext(body, {
+    document:{getElementById(id) { assert.ok(dom[id],id); return dom[id]; }},
+    window, CONFIG:C, createClient:()=>sb, isConfigured, getAuthorizationId,
+    isOwner, authorizeDetails, matchingCallback, classifyOAuthCallback, returnToConsent,
+    describeSignInError:()=> "Safe failure"
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(dom.signin.hidden,false);
+  dom.email.value="owner@example.test";
+  await dom.signin.handlers.submit({preventDefault() {}});
+  assert.equal(sent.length,1);
+  assert.equal(sent[0].options.shouldCreateUser,false);
+  assert.match(sent[0].options.emailRedirectTo,/authorization_id=/);
+  assert.equal(dom.otp.hidden,false);
+  dom.code.value="123456";
+  await dom.otp.handlers.submit({preventDefault() {}});
+  assert.equal(verified.length,1);
+  assert.deepEqual(JSON.parse(JSON.stringify(verified[0])),{email:"owner@example.test",token:"123456",type:"email"});
+  assert.equal(dom.previous.hidden,false);
+  assert.equal(redirects.length,0);
+  dom["continue"].handlers.click();
+  assert.equal(redirects.length,1);
+  assert.equal(redirects[0],C.approvedRedirectUri+"?code=valid-code&state=opaque-state");
 });

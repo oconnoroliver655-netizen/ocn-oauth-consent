@@ -1,10 +1,14 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.117.3?bundle";
 import { CONFIG } from "./config.mjs";
-import { isConfigured, getAuthorizationId, isOwner, authorizeDetails, matchingCallback, returnToConsent } from "./guards.mjs";
+import {
+  isConfigured, getAuthorizationId, isOwner, authorizeDetails,
+  matchingCallback, classifyOAuthCallback, returnToConsent
+} from "./guards.mjs";
 import { describeSignInError } from "./auth-email-errors.mjs";
 
 const status = document.getElementById("status");
 const form = document.getElementById("signin");
+const otpForm = document.getElementById("otp");
 const review = document.getElementById("review");
 const previous = document.getElementById("previous");
 const allow = document.getElementById("approve");
@@ -12,58 +16,24 @@ const deny = document.getElementById("deny");
 const check = document.getElementById("checked");
 
 function report(message) { status.textContent = message; }
-function redirectToVerifiedClient(value) {
-  if (!matchingCallback(value, CONFIG.approvedRedirectUri, true)) {
-    report("Blocked: returned callback did not match the registered OAuth client.");
-    return;
+
+// Consent must yield an actual OAuth code+state (or an explicit denial).
+// Simply returning to chatgpt.com without an authorization result causes
+// the client to ask for additional access again.
+function redirectToVerifiedClient(value, expectedOutcome) {
+  if (!matchingCallback(value, CONFIG.approvedRedirectUri, true) ||
+      classifyOAuthCallback(value, CONFIG.approvedRedirectUri) !== expectedOutcome) {
+    report("Authorization callback was incomplete or mismatched. No redirect was performed. Start a fresh connection from ChatGPT.");
+    return false;
   }
   window.location.assign(value);
+  return true;
 }
 
-async function main() {
-  // Never create a Supabase client or send credentials with incomplete config.
-  if (!isConfigured(CONFIG)) {
-    report("Authorization is not configured yet. No sign-in or permission can be granted.");
-    return;
-  }
-  const authorizationId = getAuthorizationId(window.location.search);
-  if (!authorizationId) {
-    report("Missing or invalid authorization request. Start from an approved OAuth client.");
-    return;
-  }
-
-  const sb = createClient(CONFIG.supabaseUrl, CONFIG.publishableKey, {
-    auth: { flowType: "pkce", detectSessionInUrl: true, persistSession: true, autoRefreshToken: true }
-  });
-  const identity = await sb.auth.getUser();
-  if (!identity?.data?.user || identity.error) {
-    form.hidden = false;
-    report("Sign in using the account registered as the owner.");
-    form.addEventListener("submit", async event => {
-      event.preventDefault();
-      const email = String(document.getElementById("email").value || "").trim();
-      if (!email || email.length > 254) return;
-      const send = document.getElementById("send");
-      send.disabled = true;
-      report("Requesting a sign-in link…");
-      try {
-        const redirect = returnToConsent(window.location.href, authorizationId);
-        const { error } = await sb.auth.signInWithOtp({
-          email,
-          options: { shouldCreateUser: false, emailRedirectTo: redirect }
-        });
-        report(error
-          ? describeSignInError(error)
-          : "A sign-in email was requested. Check the registered inbox and open the link in this browser. Avoid repeated requests.");
-      } catch {
-        report(describeSignInError(null));
-      }
-      // Intentionally keep this button disabled after one request per loaded page.
-      // Repeated taps exhaust the project's extremely limited email quota.
-    });
-    return;
-  }
-  if (!isOwner(identity.data.user, CONFIG)) {
+async function showAuthorization(sb, authorizationId, user) {
+  if (!isOwner(user, CONFIG)) {
+    form.hidden = true;
+    otpForm.hidden = true;
     report("Access denied: the signed-in Supabase account is not the approved owner.");
     return;
   }
@@ -76,19 +46,19 @@ async function main() {
     return;
   }
   if (result.error || !result.data) {
-    report("OAuth request is expired, invalid, or unavailable.");
+    report("OAuth request is expired, invalid, or unavailable. Start a fresh connection from ChatGPT.");
     return;
   }
   const details = result.data;
   if (!Object.hasOwn(details, "authorization_id")) {
-    if (!matchingCallback(details.redirect_url, CONFIG.approvedRedirectUri, true)) {
-      report("Previously granted authorization has an unexpected callback. Access denied.");
+    if (classifyOAuthCallback(details.redirect_url, CONFIG.approvedRedirectUri) !== "approved") {
+      report("Previously approved authorization returned an incomplete callback. Start a fresh connection from ChatGPT.");
       return;
     }
-    report("Supabase reports prior consent for this callback.");
+    report("Supabase reports prior consent. Continue in this same browser to complete the ChatGPT connection.");
     previous.hidden = false;
     document.getElementById("continue").addEventListener("click", () =>
-      redirectToVerifiedClient(details.redirect_url), { once: true });
+      redirectToVerifiedClient(details.redirect_url, "approved"), { once: true });
     return;
   }
 
@@ -113,8 +83,7 @@ async function main() {
     deny.disabled = true;
     report("Submitting consent decision…");
     try {
-      // Supabase OAuth methods redirect by default in browsers. We must
-      // explicitly disable that behavior to check the callback first.
+      // Supabase redirects by default; inspect the exact registered callback first.
       const answer = action === "allow"
         ? await sb.auth.oauth.approveAuthorization(authorizationId, { skipBrowserRedirect: true })
         : await sb.auth.oauth.denyAuthorization(authorizationId, { skipBrowserRedirect: true });
@@ -122,9 +91,10 @@ async function main() {
         report("Consent decision failed. No redirect performed.");
         return;
       }
-      redirectToVerifiedClient(answer.data.redirect_url);
-    } catch { report("Consent service unavailable. No redirect performed."); }
-    finally {
+      redirectToVerifiedClient(answer.data.redirect_url, action === "allow" ? "approved" : "denied");
+    } catch {
+      report("Consent service unavailable. No redirect performed.");
+    } finally {
       pending = false;
       deny.disabled = false;
       allow.disabled = !check.checked;
@@ -132,5 +102,98 @@ async function main() {
   }
   allow.addEventListener("click", () => decide("allow"));
   deny.addEventListener("click", () => decide("deny"));
+}
+
+async function main() {
+  if (!isConfigured(CONFIG)) {
+    report("Authorization is not configured yet. No sign-in or permission can be granted.");
+    return;
+  }
+  const authorizationId = getAuthorizationId(window.location.search);
+  if (!authorizationId) {
+    report("Missing or invalid authorization request. Start from an approved OAuth client.");
+    return;
+  }
+  const sb = createClient(CONFIG.supabaseUrl, CONFIG.publishableKey, {
+    auth: { flowType: "pkce", detectSessionInUrl: true, persistSession: true, autoRefreshToken: true }
+  });
+  const identity = await sb.auth.getUser();
+  if (identity?.data?.user && !identity.error) {
+    await showAuthorization(sb, authorizationId, identity.data.user);
+    return;
+  }
+
+  form.hidden = false;
+  report("Sign in with your registered email. Keep this page open while checking Gmail.");
+  const emailInput = document.getElementById("email");
+  const send = document.getElementById("send");
+  const codeInput = document.getElementById("code");
+  const verify = document.getElementById("verify");
+  let requestedEmail = null;
+  let attempts = 0;
+
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    if (send.disabled) return;
+    const email = String(emailInput.value || "").trim();
+    if (!email || email.length > 254) return;
+    send.disabled = true; // Only one email per page; never auto-resend.
+    report("Requesting sign-in email…");
+    try {
+      const { error } = await sb.auth.signInWithOtp({
+        email,
+        options: { shouldCreateUser: false, emailRedirectTo: returnToConsent(window.location.href, authorizationId) }
+      });
+      if (error) {
+        report(describeSignInError(error));
+        return;
+      }
+      requestedEmail = email;
+      emailInput.readOnly = true;
+      otpForm.hidden = false;
+      report("A sign-in email was requested. If it contains a numeric code, enter it below. If it still contains only a legacy sign-in link, open that link in this same browser context until the Supabase email template is switched. Avoid repeated email requests.");
+      codeInput.focus();
+    } catch {
+      report(describeSignInError(null));
+    }
+  });
+
+  otpForm.addEventListener("submit", async event => {
+    event.preventDefault();
+    if (!requestedEmail || verify.disabled || attempts >= 3) return;
+    const token = String(codeInput.value || "").trim();
+    if (!/^[0-9]{6,8}$/.test(token)) {
+      report("Enter the 6–8 digit code from the email.");
+      return;
+    }
+    verify.disabled = true;
+    attempts += 1;
+    report("Verifying the email code…");
+    try {
+      const { error } = await sb.auth.verifyOtp({ email: requestedEmail, token, type: "email" });
+      codeInput.value = "";
+      if (error) {
+        report(attempts >= 3
+          ? "Code verification failed. This page has reached its attempt limit; start a new connection later."
+          : "Code verification failed or expired. Check the code and try again. No access was granted.");
+        verify.disabled = attempts >= 3;
+        return;
+      }
+      const verified = await sb.auth.getUser();
+      if (verified.error || !verified.data?.user) {
+        report("Email verification returned no authenticated session. No access was granted.");
+        return;
+      }
+      form.hidden = true;
+      otpForm.hidden = true;
+      await showAuthorization(sb, authorizationId, verified.data.user);
+    } catch {
+      codeInput.value = "";
+      report("Could not complete code verification. No access was granted.");
+      verify.disabled = attempts >= 3;
+    } finally {
+      if (attempts < 3 && !otpForm.hidden) verify.disabled = false;
+    }
+  });
 }
 main().catch(() => report("Could not initialize authorization. No access granted."));

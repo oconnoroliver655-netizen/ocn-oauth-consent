@@ -4,7 +4,7 @@ const KNOWN = Object.freeze({
   email_address_not_authorized: "Supabase blocked delivery to this recipient. Review the project's SMTP configuration and organization membership.",
   over_email_send_rate_limit: "Supabase has limited email sends. Do not retry now; wait for the email quota to reset or configure an approved SMTP provider.",
   over_request_rate_limit: "Too many authentication requests. Stop retrying and let the request limit reset.",
-  otp_disabled: "Email one-time link sign-in is disabled in Supabase Auth configuration.",
+  otp_disabled: "Email one-time code sign-in is disabled in Supabase Auth configuration.",
   email_address_invalid: "Supabase rejected the email address. Review the approved owner email in project configuration.",
   email_provider_disabled: "Email sign-in is not enabled in Supabase Auth configuration.",
   unexpected_failure: "Supabase could not complete the email delivery. The project administrator must check Auth logs and SMTP."

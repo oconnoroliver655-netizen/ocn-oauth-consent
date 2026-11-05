@@ -36,3 +36,22 @@ node --test tests/policy.test.mjs
 ```
 
 Production operations must not rely on public JavaScript checks as an authentication or authorization boundary.
+
+## Same-browser OTP rollout (2026-11-05)
+
+The consent UI now verifies an **email code in the same browser tab**, avoiding a Gmail → other browser → ChatGPT app hop during Supabase sign-in. This does not change the pinned owner, registered callback, OAuth scopes or Windows security boundary.
+
+**ROLLOUT ORDER:** Supabase `signInWithOtp` sends Magic Links by default. First deploy the backward-compatible consent UI (it still accepts a legacy Magic Link in the same browser). Then open **Supabase Dashboard → Authentication → Email Templates → Magic Link** and replace the one-click link with a numeric code. Do not include `{{ .ConfirmationURL }}`.
+
+```html
+<h2>OCN owner sign-in code</h2>
+<p>Enter this one-time code into the OCN authorization page:</p>
+<p><strong>{{ .Token }}</strong></p>
+<p>If you did not request this code, ignore this email.</p>
+```
+
+The UI calls `verifyOtp({ email, token, type: "email" })`, accepts 6–8 digits, verifies the owner UUID from a fresh `getUser()`, and resumes the original `authorization_id`. Email sends are restricted to one per page and code checks to three attempts per page. Never record an OTP, Magic Link, OAuth code or token in a repo or diagnostic log.
+
+**Acceptance:** before deploying the compatible UI, run `node --check assets/consent.mjs && node --check assets/guards.mjs && node --test tests/policy.test.mjs`; validate wrong-code, wrong-owner, missing-code and duplicate-state rejection and retain the existing Magic Link flow. Once the compatible UI is live, change the email template to code-only, verify a numeric email code and complete one authorized real ChatGPT connector login in a single browser context. Confirm ChatGPT reports Connected and a server-side OAuth code exchange occurred. `owner_verified=true` alone is not proof of ChatGPT's new grant.
+
+Missing or malformed OAuth callbacks now fail closed instead of silently redirecting. Mobile browser-to-app token-state handoff problems can still occur after a valid callback; they require a separate ChatGPT client session check.
