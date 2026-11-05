@@ -6,6 +6,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {BROWSER_OPERATIONS, validBrowserPayload} from "./browser-operation-policy.mjs";
 import {classifyQueuePressure,parseExactContentRange,activeQueueComplete} from "./queue-pressure.mjs";
+import {validCancelReference,queuedCancelFilter,classifyCancelAfterRace} from "./cancel-queued.mjs";
 
 const SUPABASE = "https://ouxniljtjxnrkwakkvbv.supabase.co";
 const VALIDATOR = SUPABASE + "/functions/v1/ocn-oauth-validator";
@@ -13,7 +14,7 @@ const OWNER = "12509085-8869-4258-83f6-3afd6c53cec3";
 const DEVICE = "DESKTOP-3I4OTFT-local-control";
 const KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const NONCE = /^[0-9a-f]{32}$/;
-const STATE = new Set(["queued","claimed","completed","failed","cancelled","expired","needs_review"]);
+const STATE = new Set(["queued","claimed","uploading","completed","failed","cancelled","expired","needs_review"]);
 
 function response(status: number, body: object): Response {
   return new Response(JSON.stringify(body), {
@@ -235,6 +236,51 @@ async function submitWindows(input:any):Promise<Response> {
   if(!Number.isSafeInteger(id)||id<1)return response(503,{ok:false,error:"Invalid queue receipt"});
   return response(202,{ok:true,command_id:id,nonce,status:"queued",operation:op});
 }
+// Queued-only cancellation. One atomic UPDATE races the agent's conditional
+// status=queued claim; a claimed command is never marked cancelled here.
+// Repeat requests resolve by the original command_id/nonce, not resubmission.
+async function cancelQueuedWindows(input:any):Promise<Response>{
+  if(!validCancelReference(input))
+    return response(400,{ok:false,error:"Invalid command reference"});
+  const q=queuedCancelFilter(input,OWNER,DEVICE);
+  const r=await fetch(SUPABASE+"/rest/v1/local_control_commands?"+q.toString(),{
+    method:"PATCH",headers:serverHeaders("return=representation"),
+    body:JSON.stringify({status:"cancelled",completed_at:new Date().toISOString(),
+      error:"QUEUED_OWNER_CANCELLED"}),
+    signal:AbortSignal.timeout(7000)
+  });
+  if(!r.ok)return response(503,{ok:false,error:"Cancellation status unavailable",
+    command_id:input.command_id,execution_outcome:"UNKNOWN",
+    retry_same_reference:true});
+  const updated=await r.json().catch(()=>null);
+  if(!Array.isArray(updated)||updated.length>1)
+    return response(503,{ok:false,error:"Cancellation receipt unavailable",
+      command_id:input.command_id,execution_outcome:"UNKNOWN",
+      retry_same_reference:true});
+  if(updated.length===1){
+    if(updated[0].id!==input.command_id||updated[0].status!=="cancelled")
+      return response(503,{ok:false,error:"Invalid cancellation receipt",
+        command_id:input.command_id,execution_outcome:"UNKNOWN",
+        retry_same_reference:true});
+    return response(200,{ok:true,command_id:input.command_id,status:"cancelled",
+      cancelled:true,already_cancelled:false,cancellation_scope:"queued_only",
+      execution_outcome:"NOT_STARTED"});
+  }
+  // Lost race or duplicate request: inspect EXACT original task. Never write
+  // after this point, and never expose its request/payload or agent errors.
+  const check=new URLSearchParams({
+    select:"id,nonce,kind,request,status,error",
+    id:"eq."+input.command_id,nonce:"eq."+input.nonce,limit:"1"
+  });
+  const rows=await getRows(check);
+  if(!rows)return response(503,{ok:false,error:"Cancellation reconciliation unavailable",
+    command_id:input.command_id,execution_outcome:"UNKNOWN",
+    retry_same_reference:true});
+  if(rows.length!==1)return response(404,{ok:false,error:"Command not found"});
+  const classified=classifyCancelAfterRace(rows[0],input,OWNER,DEVICE);
+  if(!classified)return response(404,{ok:false,error:"Command not found"});
+  return response(classified.ok?200:409,classified);
+}
 async function pollWindows(input:any):Promise<Response>{
   const id=input.command_id,nonce=input.nonce;
   if(!Number.isSafeInteger(id)||id<1||typeof nonce!=="string"||!NONCE.test(nonce))
@@ -254,6 +300,9 @@ async function pollWindows(input:any):Promise<Response>{
   // A claimed task can expire after dispatch with unknown execution outcome.
   // Preserve its original identity, never invite an automatic replay, and
   // never expose the request payload or internal error text.
+  if(row.status==="cancelled" && row.error==="QUEUED_OWNER_CANCELLED")
+    return response(200,{...data,execution_state:"CANCELLED_BEFORE_CLAIM",
+      execution_outcome:"NOT_STARTED",cancelled_before_claim:true});
   if(row.status==="needs_review"){
     return response(200,{...data,execution_outcome:"UNKNOWN",
       review_required:true,retry_safe:false});
@@ -297,6 +346,7 @@ Deno.serve(async (req:Request):Promise<Response> => {
         action === "poll_machine_health" && keys === "action,command_id,nonce" ||
         action === "submit_windows_operation" && keys === "action,operation,payload" ||
         action === "poll_windows_operation" && keys === "action,command_id,nonce" ||
+        action === "cancel_queued_windows_operation" && keys === "action,command_id,nonce" ||
         action === "queue_pressure_status" && keys === "action"))
     return response(400,{ok:false,error:"Unsupported operation"});
 
@@ -304,6 +354,7 @@ Deno.serve(async (req:Request):Promise<Response> => {
     if(action==="queue_pressure_status")return await queuePressureStatus();
     if(action==="submit_windows_operation")return await submitWindows(input);
     if(action==="poll_windows_operation")return await pollWindows(input);
+    if(action==="cancel_queued_windows_operation")return await cancelQueuedWindows(input);
     return action === "submit_machine_health" ?
       await dispatchHealth() : await pollHealth(input);
   } catch {
