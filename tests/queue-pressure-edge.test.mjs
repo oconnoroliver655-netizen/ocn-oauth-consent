@@ -158,13 +158,13 @@ test("C5 owner-only queued cancellation performs exactly one CAS PATCH",()=>{
   const end=index.indexOf("\nasync function pollWindows(",start);
   assert.ok(start>0 && end>start);
   const cancel=index.slice(start,end);
-  assert.ok(cancel.includes("validCancelReference(input)"));
-  assert.ok(cancel.includes("queuedCancelFilter(input,OWNER,DEVICE)"));
+  assert.ok(cancel.includes("validCancelReference(ref)"));
+  assert.ok(cancel.includes("queuedCancelFilter(ref,OWNER,DEVICE)"));
   assert.equal((cancel.match(/method:"PATCH"/g)||[]).length,1);
   assert.ok(cancel.includes('headers:serverHeaders("return=representation")'));
   assert.ok(cancel.includes('status:"cancelled"'));
   assert.ok(cancel.includes('error:"QUEUED_OWNER_CANCELLED"'));
-  assert.ok(cancel.includes('classifyCancelAfterRace(rows[0],input,OWNER,DEVICE)'));
+  assert.ok(cancel.includes('classifyCancelAfterRace(rows[0],ref,OWNER,DEVICE)'));
   assert.ok(cancel.includes('response(classified.ok?200:409,classified)'));
   assert.ok(!cancel.includes('status:"claimed"'));
   assert.ok(!cancel.includes('run_as'));
