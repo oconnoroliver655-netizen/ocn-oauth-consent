@@ -13,7 +13,7 @@ const OWNER = "12509085-8869-4258-83f6-3afd6c53cec3";
 const DEVICE = "DESKTOP-3I4OTFT-local-control";
 const KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const NONCE = /^[0-9a-f]{32}$/;
-const STATE = new Set(["queued","claimed","completed","failed","cancelled","expired"]);
+const STATE = new Set(["queued","claimed","completed","failed","cancelled","expired","needs_review"]);
 
 function response(status: number, body: object): Response {
   return new Response(JSON.stringify(body), {
@@ -238,6 +238,13 @@ async function pollWindows(input:any):Promise<Response>{
      !Number.isFinite(exp)||exp<Date.now()-86400000||!STATE.has(row.status))
     return response(404,{ok:false,error:"Command not found"});
   const data:any={ok:true,command_id:id,operation:req.operation,status:row.status};
+  // A claimed task can expire after dispatch with unknown execution outcome.
+  // Preserve its original identity, never invite an automatic replay, and
+  // never expose the request payload or internal error text.
+  if(row.status==="needs_review"){
+    return response(200,{...data,execution_outcome:"UNKNOWN",
+      review_required:true,retry_safe:false});
+  }
   if(TERMINAL.has(row.status)){
     const result=row.result;
     if(result?.operation!==req.operation||typeof result?.state!=="string")
