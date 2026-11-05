@@ -73,7 +73,7 @@ test("OAuth test route advertises protected probe and returns MCP tool-level cha
     body:JSON.stringify({jsonrpc:"2.0",id:1,method:"tools/list",params:{}})});
   assert.equal(listing.status,200);
   const list=(await listing.json()).result.tools;
-  const baseTools=["ping","owner_auth_probe","session_context_probe","submit_machine_health","poll_machine_health","inspect_pr529_ci","cancel_stale_pr529_ci","submit_windows_operation","poll_windows_operation"];
+  const baseTools=["ping","owner_auth_probe","session_context_probe","submit_machine_health","poll_machine_health","inspect_pr529_ci","cancel_stale_pr529_ci","submit_windows_operation","poll_windows_operation","cancel_queued_windows_operation"];
   assert.deepEqual(list.slice(0,baseTools.length).map(t=>t.name),baseTools);
   const names=new Set(list.map(t=>t.name));
   for(const required of ["browser_status","browser_connect","browser_tab_list","browser_snapshot","browser_batch",
@@ -90,6 +90,8 @@ test("OAuth test route advertises protected probe and returns MCP tool-level cha
   assert.equal(byName.get("cancel_stale_pr529_ci").annotations.destructiveHint,true);
   assert.equal(byName.get("submit_windows_operation").annotations.destructiveHint,true);
   assert.equal(byName.get("poll_windows_operation").annotations.readOnlyHint,true);
+  assert.equal(byName.get("cancel_queued_windows_operation").annotations.destructiveHint,true);
+  assert.equal(byName.get("cancel_queued_windows_operation").annotations.readOnlyHint,false);
   assert.equal(byName.get("run_windows_operation").annotations.destructiveHint,true);
   assert.equal(byName.get("read_file_lines").annotations.readOnlyHint,true);
   assert.equal(byName.get("search_code").annotations.readOnlyHint,true);
@@ -128,7 +130,8 @@ test("health-only tools require signed owner and never expose file/shell",async(
     ["read_terminal_output",{terminal_id:"a".repeat(32),offset:0,max_bytes:1000}],
     ["submit_admin_powershell",{script:"whoami /user"}],
     ["submit_routed_windows_operation",{operation:"powershell",payload:{script:"whoami"},intent:"system_maintenance"}],
-    ["poll_windows_operation",{command_id:1,nonce:"a".repeat(32)}]
+    ["poll_windows_operation",{command_id:1,nonce:"a".repeat(32)}],
+    ["cancel_queued_windows_operation",{command_id:1,nonce:"a".repeat(32)}]
   ]){
     const r=await httpFetch(base+"/mcp-oauth",{method:"POST",headers:headers(),
       body:JSON.stringify({jsonrpc:"2.0",id:8,method:"tools/call",params:{name,arguments:args}})});
@@ -156,6 +159,8 @@ test("health-only tools require signed owner and never expose file/shell",async(
     {name:"submit_admin_powershell",arguments:{script:"whoami",run_as:"system"}},
     {name:"submit_routed_windows_operation",arguments:{operation:"unknown",payload:{}}},
     {name:"poll_windows_operation",arguments:{command_id:1,nonce:"wrong"}},
+    {name:"cancel_queued_windows_operation",arguments:{command_id:1,nonce:"wrong"}},
+    {name:"cancel_queued_windows_operation",arguments:{command_id:1,nonce:"a".repeat(32),run_as:"system"}},
     {name:"submit_file_write",arguments:{}}
   ]){
     const r=await httpFetch(base+"/mcp-oauth",{method:"POST",headers:headers(),
