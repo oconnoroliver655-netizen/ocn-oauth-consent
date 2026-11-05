@@ -41,7 +41,7 @@ Production operations must not rely on public JavaScript checks as an authentica
 
 The consent UI now verifies an **email code in the same browser tab**, avoiding a Gmail → other browser → ChatGPT app hop during Supabase sign-in. This does not change the pinned owner, registered callback, OAuth scopes or Windows security boundary.
 
-**DEPLOYMENT GATE:** Supabase `signInWithOtp` sends Magic Links by default. Before merging the UI into GitHub Pages, open the **Supabase Dashboard → Authentication → Email Templates → Magic Link** template and replace the existing one-click link with a numeric code. Do not include `{{ .ConfirmationURL }}`.
+**ROLLOUT ORDER:** Supabase `signInWithOtp` sends Magic Links by default. First deploy the backward-compatible consent UI (it still accepts a legacy Magic Link in the same browser). Then open **Supabase Dashboard → Authentication → Email Templates → Magic Link** and replace the one-click link with a numeric code. Do not include `{{ .ConfirmationURL }}`.
 
 ```html
 <h2>OCN owner sign-in code</h2>
@@ -52,6 +52,6 @@ The consent UI now verifies an **email code in the same browser tab**, avoiding 
 
 The UI calls `verifyOtp({ email, token, type: "email" })`, accepts 6–8 digits, verifies the owner UUID from a fresh `getUser()`, and resumes the original `authorization_id`. Email sends are restricted to one per page and code checks to three attempts per page. Never record an OTP, Magic Link, OAuth code or token in a repo or diagnostic log.
 
-**Acceptance before release:** check the project email template actually delivers numeric codes without an actionable one-click link; run `node --check assets/consent.mjs && node --check assets/guards.mjs && node --test tests/policy.test.mjs`; validate wrong-code, wrong-owner, missing-code and duplicate-state rejection; then perform one authorized real login in a single browser context and independently verify ChatGPT reports Connected and the OAuth code was exchanged. A server-side `owner_verified=true` probe alone is not proof of ChatGPT's new grant.
+**Acceptance:** before deploying the compatible UI, run `node --check assets/consent.mjs && node --check assets/guards.mjs && node --test tests/policy.test.mjs`; validate wrong-code, wrong-owner, missing-code and duplicate-state rejection and retain the existing Magic Link flow. Once the compatible UI is live, change the email template to code-only, verify a numeric email code and complete one authorized real ChatGPT connector login in a single browser context. Confirm ChatGPT reports Connected and a server-side OAuth code exchange occurred. `owner_verified=true` alone is not proof of ChatGPT's new grant.
 
 Missing or malformed OAuth callbacks now fail closed instead of silently redirecting. Mobile browser-to-app token-state handoff problems can still occur after a valid callback; they require a separate ChatGPT client session check.
