@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {validCancelReference,queuedCancelFilter,classifyCancelAfterRace}
+import {validCancelReference,queuedCancelFilter,classifyCancelAfterRace,resolveQueuedCancel}
   from "../supabase/functions/ocn-owner-health-dispatch/cancel-queued.mjs";
 
 const nonce="a".repeat(32);
@@ -85,4 +85,140 @@ test("queued-but-not-updated is unresolved, so the original reference may be ret
   assert.equal(x.cancelled,false);
   assert.equal(x.retry_same_reference,true);
   assert.equal(x.error,"CANCEL_RACE_UNRESOLVED");
+});
+
+
+test("real state-machine adapter cancels before claim with one atomic request",async()=>{
+  const events=[];
+  let current=row("queued");
+  const patch=async filter=>{
+    events.push({kind:"PATCH",filter:[...filter.entries()]});
+    if(current.status!=="queued" || filter.get("nonce")!=="eq."+nonce)
+      return [];
+    current=row("cancelled",{error:"QUEUED_OWNER_CANCELLED"});
+    return [{id:ref.command_id,status:"cancelled"}];
+  };
+  const lookup=async()=>{events.push({kind:"GET"});return [current];};
+  const first=await resolveQueuedCancel(ref,owner,device,{patch,lookup});
+  assert.equal(first.http_status,200);
+  assert.equal(first.body.cancelled,true);
+  assert.equal(first.body.already_cancelled,false);
+  assert.equal(first.body.execution_outcome,"NOT_STARTED");
+  assert.equal(events.filter(x=>x.kind==="PATCH").length,1);
+  assert.equal(events.filter(x=>x.kind==="GET").length,0);
+  const duplicate=await resolveQueuedCancel(ref,owner,device,{patch,lookup});
+  assert.equal(duplicate.http_status,200);
+  assert.equal(duplicate.body.already_cancelled,true);
+  assert.equal(duplicate.body.cancelled,true);
+  assert.equal(events.filter(x=>x.kind==="PATCH").length,2);
+  assert.equal(events.filter(x=>x.kind==="GET").length,1);
+  assert.ok(!JSON.stringify([first,duplicate]).includes("NEVER_EXPOSE"));
+});
+test("concurrent agent claim wins: cancellation returns conflict, not false success",async()=>{
+  let state=row("queued"),patchCount=0,lookupCount=0;
+  const claim=()=>{if(state.status!=="queued")return false;
+    state=row("claimed");return true;};
+  assert.equal(claim(),true);
+  const v=await resolveQueuedCancel(ref,owner,device,{
+    patch:async q=>{
+      patchCount++;
+      assert.equal(q.get("status"),"eq.queued");
+      return state.status==="queued"?[{id:ref.command_id,status:"cancelled"}]:[];
+    },
+    lookup:async()=>{lookupCount++;return [state];}
+  });
+  assert.equal(patchCount,1);
+  assert.equal(lookupCount,1);
+  assert.equal(v.http_status,409);
+  assert.equal(v.body.cancelled,false);
+  assert.equal(v.body.execution_outcome,"UNKNOWN");
+  assert.equal(state.status,"claimed");
+});
+test("cancelled wins the queued race: later claim cannot start",async()=>{
+  let state="queued";
+  const outcome=await resolveQueuedCancel(ref,owner,device,{
+    patch:async filter=>{
+      assert.equal(filter.get("status"),"eq.queued");
+      if(state!=="queued")return [];
+      state="cancelled";
+      return [{id:ref.command_id,status:state}];
+    },
+    lookup:async()=>{throw new Error("should not read after one successful CAS");}
+  });
+  const claimSucceeded=state==="queued";
+  assert.equal(outcome.http_status,200);
+  assert.equal(claimSucceeded,false);
+  assert.equal(state,"cancelled");
+});
+test("lost cancellation response does not replay task or misreport success",async()=>{
+  let state=row("queued"),attempts=0;
+  const patch=async()=>{
+    attempts++;
+    if(state.status==="queued")state=row("cancelled",{error:"QUEUED_OWNER_CANCELLED"});
+    if(attempts===1)throw new Error("network dropped after commit");
+    return [];
+  };
+  const lookup=async()=>[state];
+  const uncertain=await resolveQueuedCancel(ref,owner,device,{patch,lookup});
+  assert.equal(uncertain.http_status,503);
+  assert.equal(uncertain.body.cancelled,false);
+  assert.equal(uncertain.body.execution_outcome,"UNKNOWN");
+  assert.equal(uncertain.body.command_id,ref.command_id);
+  assert.equal(uncertain.body.retry_same_reference,true);
+  const retry=await resolveQueuedCancel(ref,owner,device,{patch,lookup});
+  assert.equal(retry.http_status,200);
+  assert.equal(retry.body.already_cancelled,true);
+  assert.equal(attempts,2);
+});
+test("mismatched owner/device and nonce resolve to generic not found with no leaks",async()=>{
+  const mismatch=[
+    row("claimed",{request:{bound_owner:"different",bound_agent_id:device}}),
+    row("cancelled",{nonce:"b".repeat(32),error:"QUEUED_OWNER_CANCELLED"}),
+    row("cancelled",{request:{bound_owner:owner,bound_agent_id:"different"},
+      error:"QUEUED_OWNER_CANCELLED"})
+  ];
+  for(const fake of mismatch){
+    let count=0;
+    const output=await resolveQueuedCancel(ref,owner,device,{
+      patch:async()=>{count++;return [];},
+      lookup:async()=>{count++;return [fake];}
+    });
+    assert.equal(count,2);
+    assert.equal(output.http_status,404);
+    assert.deepEqual(output.body,{ok:false,error:"Command not found"});
+    assert.ok(!JSON.stringify(output).includes("NEVER_EXPOSE"));
+  }
+});
+test("ambiguous/malformed PATCH, result read failure and oversized lookup fail closed",async()=>{
+  for(const patch of [
+    async()=>null,async()=>({}),async()=>[{id:1},{id:2}],
+    async()=>[{id:ref.command_id,status:"claimed"}],
+    async()=>[{id:ref.command_id+1,status:"cancelled"}]
+  ]){
+    let reads=0;
+    const got=await resolveQueuedCancel(ref,owner,device,{
+      patch,lookup:async()=>{reads++;return [row("queued")];}
+    });
+    assert.equal(got.http_status,503);
+    assert.equal(got.body.execution_outcome,"UNKNOWN");
+    assert.equal(reads,0);
+  }
+  const lost=await resolveQueuedCancel(ref,owner,device,{
+    patch:async()=>[],lookup:async()=>{throw Error("read failed");}
+  });
+  assert.equal(lost.http_status,503);
+  const ambiguous=await resolveQueuedCancel(ref,owner,device,{
+    patch:async()=>[],lookup:async()=>[row("cancelled"),row("claimed")]
+  });
+  assert.equal(ambiguous.http_status,503);
+});
+test("invalid original reference causes no database call",async()=>{
+  let called=0;
+  const outcome=await resolveQueuedCancel({command_id:0,nonce},owner,device,{
+    patch:async()=>{called++;return [];},
+    lookup:async()=>{called++;return [];}
+  });
+  assert.equal(called,0);
+  assert.equal(outcome.http_status,400);
+  assert.equal(outcome.body.ok,false);
 });
