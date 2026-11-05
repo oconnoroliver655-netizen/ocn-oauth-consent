@@ -3,7 +3,6 @@ on:
   push:
     branches:
       - feature/render-mcp-ping-canary-20261012
-      - feature/ocn-c5-cancel-race-model-20261105
     paths:
       - "canary/mcp/**"
       - ".github/workflows/render-mcp-canary.yml"
