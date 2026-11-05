@@ -46,7 +46,7 @@ export function validWindowsCall(tool,args){
        validBrowserPayload(args.operation,args.payload));
   return false;
 }
-export async function callWindowsOperation(bearer,tool,args){
+export async function callWindowsOperation(bearer,tool,args,{timeout_ms=30000}={}){
   if(typeof bearer!=="string"||!bearer.startsWith("Bearer ")||bearer.length>8200)
     return {unauthorized:true};
   if(!validWindowsCall(tool,args))return {error:"Invalid Windows operation arguments"};
@@ -56,7 +56,8 @@ export async function callWindowsOperation(bearer,tool,args){
   try{
     const r=await fetch(EDGE,{method:"POST",
       headers:{"authorization":bearer,"content-type":"application/json"},
-      body:JSON.stringify(payload),signal:AbortSignal.timeout(30000)});
+      body:JSON.stringify(payload),signal:AbortSignal.timeout(
+        Number.isSafeInteger(timeout_ms)?Math.min(30000,Math.max(100,timeout_ms)):30000)});
     if(r.status===401)return {unauthorized:true};
     const response=await r.json();
     if(!r.ok||response?.ok!==true)return {error:response?.error||"Windows execution unavailable"};
@@ -69,6 +70,58 @@ export async function callWindowsOperation(bearer,tool,args){
       return {error:"Invalid Windows result receipt"};
     return {value:response};
   }catch{return {error:"Windows execution service unavailable"};}
+}
+
+// One-call convenience for existing signed queue operations. An expired wait
+// NEVER resubmits a task: the returned command_id and nonce remain pollable.
+export const RUN_WINDOWS_TOOL={
+  name:"run_windows_operation",
+  description:"Submit one owner-authorized Windows task and wait up to 12 seconds for its verified receipt. Supports existing file, terminal, desktop and browser operation types; no additional permissions or execution worker. Returns terminal execution_state/detail when completed, otherwise the original command_id/nonce to continue with poll_windows_operation. Never interpret queued/claimed/running as success and never resubmit after a wait timeout.",
+  inputSchema:{type:"object",properties:{
+    operation:{type:"string",enum:OPERATIONS},
+    payload:{type:"object",additionalProperties:true},
+    wait_seconds:{type:"integer",minimum:0,maximum:12}
+  },required:["operation","payload"],additionalProperties:false},
+  securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
+  annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}
+};
+const TERMINAL_STATES=new Set(["completed","failed","cancelled","expired"]);
+export function validRunWindowsCall(args){
+  if(!args||typeof args!=="object"||Array.isArray(args))return false;
+  if(Object.keys(args).some(k=>!["operation","payload","wait_seconds"].includes(k)))return false;
+  if("wait_seconds" in args && (!Number.isSafeInteger(args.wait_seconds)||
+      args.wait_seconds<0||args.wait_seconds>12))return false;
+  return validWindowsCall("submit_windows_operation",{operation:args.operation,payload:args.payload});
+}
+export async function runWindowsOperation(bearer,args,{
+  invoke=callWindowsOperation,
+  pause=ms=>new Promise(resolve=>setTimeout(resolve,ms)),
+  now=()=>Date.now()
+}={}){
+  if(!validRunWindowsCall(args))return {error:"Invalid one-call Windows arguments"};
+  const submitted=await invoke(bearer,"submit_windows_operation",
+    {operation:args.operation,payload:args.payload});
+  if(!submitted.value)return submitted;
+  const original=submitted.value;
+  const waitMs=(args.wait_seconds??8)*1000;
+  if(!waitMs)return {value:{...original,terminal:false,wait_exhausted:true}};
+  const deadline=now()+waitMs;
+  while(now()<deadline){
+    await pause(Math.min(600,Math.max(0,deadline-now())));
+    const polled=await invoke(bearer,"poll_windows_operation",
+      {command_id:original.command_id,nonce:original.nonce},
+      {timeout_ms:Math.max(100,deadline-now())});
+    if(polled.value){
+      if(TERMINAL_STATES.has(polled.value.status))
+        return {value:{...polled.value,command_id:original.command_id,
+          nonce:original.nonce,terminal:true,wait_exhausted:false}};
+    }else{
+      // Submission is already committed; never hide its receipt or retry it.
+      return {value:{...original,terminal:false,wait_interrupted:true,
+        poll_error:polled.unauthorized?"AUTH_EXPIRED":"POLL_UNAVAILABLE"}};
+    }
+  }
+  return {value:{...original,terminal:false,wait_exhausted:true}};
 }
 
 // Discoverable alias for the existing owner-bound SYSTEM execution plane.
