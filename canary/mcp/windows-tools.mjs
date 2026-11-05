@@ -124,6 +124,36 @@ export async function runWindowsOperation(bearer,args,{
   return {value:{...original,terminal:false,wait_exhausted:true}};
 }
 
+// Read-only, discoverable file operation. No shell, no new execution plane:
+// the existing Windows Agent retains canonical path/authorization enforcement.
+export const DIRECT_FILE_READ_TOOL={
+  name:"read_file",
+  description:"Read one absolute Windows file using OCN's owner-OAuth-bound native file_read agent operation; no PowerShell command or new permissions. Wait up to 12 seconds for a verified terminal receipt. If pending, use the SAME command_id/nonce with poll_windows_operation. Large files and denied paths follow the existing local agent limits.",
+  inputSchema:{type:"object",properties:{
+    path:{type:"string",minLength:3,maxLength:4096,
+      description:"Absolute drive-qualified Windows path, e.g. D:\\projects\\README.md"},
+    wait_seconds:{type:"integer",minimum:0,maximum:12}
+  },required:["path"],additionalProperties:false},
+  securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
+  annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
+};
+export function validDirectFileReadCall(args){
+  if(!args||typeof args!=="object"||Array.isArray(args))return false;
+  if(Object.keys(args).some(k=>!["path","wait_seconds"].includes(k)))return false;
+  // Reject relative, UNC/device and control-character paths at the MCP edge;
+  // canonical containment and symlink checks remain the local agent's job.
+  if(typeof args.path!=="string"||args.path.length<3||args.path.length>4096||
+     !/^[A-Za-z]:[\\/]/.test(args.path)||/[\x00-\x1f\x7f]/.test(args.path))
+    return false;
+  return validRunWindowsCall({operation:"file_read",payload:{path:args.path},
+    ...(args.wait_seconds===undefined?{}:{wait_seconds:args.wait_seconds})});
+}
+export function directFileReadToWindowsCall(args){
+  if(!validDirectFileReadCall(args))throw new TypeError("Invalid file read arguments");
+  return {operation:"file_read",payload:{path:args.path},
+    wait_seconds:args.wait_seconds??8};
+}
+
 // Discoverable alias for the existing owner-bound SYSTEM execution plane.
 // It adds no elevated capability: the generic submit_windows_operation already
 // supports this exact run_as value. Authentication and queue policy are unchanged.
