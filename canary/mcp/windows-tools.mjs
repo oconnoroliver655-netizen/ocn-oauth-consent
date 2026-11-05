@@ -30,13 +30,23 @@ export const WINDOWS_TOOLS=[
     },required:["command_id","nonce"],additionalProperties:false},
     securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
     annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
+  },
+  {
+    name:"cancel_queued_windows_operation",
+    description:"Atomically cancel one not-yet-claimed OCN Windows task. Requires the ORIGINAL command_id and nonce from submit/run. Only status=queued can change to cancelled. A claimed/uploading/completed task is NOT cancelled; the tool returns an explicit conflict, and its original receipt remains pollable. Duplicate calls for the same already-cancelled task are idempotent. It never stops a running process, resubmits a task or changes another task.",
+    inputSchema:{type:"object",properties:{
+      command_id:{type:"integer",minimum:1},
+      nonce:{type:"string",pattern:"^[a-f0-9]{32}$"}
+    },required:["command_id","nonce"],additionalProperties:false},
+    securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
+    annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}
   }
 ];
 const pattern=/^[0-9a-f]{32}$/;
 export function validWindowsCall(tool,args){
   if(!args||typeof args!=="object"||Array.isArray(args))return false;
   const keys=Object.keys(args).sort().join(",");
-  if(tool==="poll_windows_operation")
+  if(tool==="poll_windows_operation"||tool==="cancel_queued_windows_operation")
     return keys==="command_id,nonce" && Number.isSafeInteger(args.command_id) &&
       args.command_id>0 && typeof args.nonce==="string" && pattern.test(args.nonce);
   if(tool==="submit_windows_operation")
@@ -60,6 +70,17 @@ export async function callWindowsOperation(bearer,tool,args,{timeout_ms=30000}={
         Number.isSafeInteger(timeout_ms)?Math.min(30000,Math.max(100,timeout_ms)):30000)});
     if(r.status===401)return {unauthorized:true};
     const response=await r.json();
+    if(tool==="cancel_queued_windows_operation"){
+      // A conflict is a valid, *negative* cancellation result, not success.
+      if(r.status===409 && response?.ok===false &&
+         response.command_id===args.command_id &&
+         response.cancelled===false && typeof response.status==="string")
+        return {conflict:response};
+      if(!r.ok && r.status>=500)
+        return {uncertain:{ok:false,command_id:args.command_id,
+          cancelled:false,execution_outcome:"UNKNOWN",
+          retry_same_reference:true,error:"CANCELLATION_RECEIPT_UNAVAILABLE"}};
+    }
     if(!r.ok||response?.ok!==true)return {error:response?.error||"Windows execution unavailable"};
     if(tool==="submit_windows_operation" &&
       (r.status!==202||!Number.isSafeInteger(response.command_id)||
@@ -68,8 +89,19 @@ export async function callWindowsOperation(bearer,tool,args,{timeout_ms=30000}={
     if(tool==="poll_windows_operation" &&
       (r.status!==200||!Number.isSafeInteger(response.command_id)||!response.status))
       return {error:"Invalid Windows result receipt"};
+    if(tool==="cancel_queued_windows_operation" &&
+      (r.status!==200||response?.ok!==true ||
+       response.command_id!==args.command_id || response.status!=="cancelled" ||
+       response.cancelled!==true))
+      return {error:"Invalid cancellation receipt"};
     return {value:response};
-  }catch{return {error:"Windows execution service unavailable"};}
+  }catch{
+    if(tool==="cancel_queued_windows_operation")
+      return {uncertain:{ok:false,command_id:args.command_id,
+        cancelled:false,execution_outcome:"UNKNOWN",
+        retry_same_reference:true,error:"CANCELLATION_RECEIPT_UNAVAILABLE"}};
+    return {error:"Windows execution service unavailable"};
+  }
 }
 
 // One-call convenience for existing signed queue operations. An expired wait
