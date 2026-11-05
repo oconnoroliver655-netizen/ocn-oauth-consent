@@ -6,7 +6,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {BROWSER_OPERATIONS, validBrowserPayload} from "./browser-operation-policy.mjs";
 import {classifyQueuePressure,parseExactContentRange,activeQueueComplete} from "./queue-pressure.mjs";
-import {validCancelReference,queuedCancelFilter,classifyCancelAfterRace} from "./cancel-queued.mjs";
+import {resolveQueuedCancel} from "./cancel-queued.mjs";
 
 const SUPABASE = "https://ouxniljtjxnrkwakkvbv.supabase.co";
 const VALIDATOR = SUPABASE + "/functions/v1/ocn-oauth-validator";
@@ -240,50 +240,34 @@ async function submitWindows(input:any):Promise<Response> {
 // status=queued claim; a claimed command is never marked cancelled here.
 // Repeat requests resolve by the original command_id/nonce, not resubmission.
 async function cancelQueuedWindows(input:any):Promise<Response>{
-  // The Edge JSON envelope includes action; validation operates on the exact
-  // immutable command reference after its strict three-field action gate.
+  // Exact three-field action envelope was validated after owner OAuth.
+  // The business transition is pure; I/O belongs only in these adapters.
   const ref={command_id:input.command_id,nonce:input.nonce};
-  if(!validCancelReference(ref))
-    return response(400,{ok:false,error:"Invalid command reference"});
-  const q=queuedCancelFilter(ref,OWNER,DEVICE);
-  const r=await fetch(SUPABASE+"/rest/v1/local_control_commands?"+q.toString(),{
-    method:"PATCH",headers:serverHeaders("return=representation"),
-    body:JSON.stringify({status:"cancelled",completed_at:new Date().toISOString(),
-      error:"QUEUED_OWNER_CANCELLED"}),
-    signal:AbortSignal.timeout(7000)
+  const result=await resolveQueuedCancel(ref,OWNER,DEVICE,{
+    patch:async (filter:any)=>{
+      const r=await fetch(SUPABASE+"/rest/v1/local_control_commands?"+filter.toString(),{
+        method:"PATCH",headers:serverHeaders("return=representation"),
+        body:JSON.stringify({status:"cancelled",completed_at:new Date().toISOString(),
+          error:"QUEUED_OWNER_CANCELLED"}),
+        signal:AbortSignal.timeout(7000)
+      });
+      if(!r.ok)throw new Error("Cancellation status unavailable");
+      return await r.json();
+    },
+    lookup:async ({command_id,nonce}:any)=>{
+      // Never query or reveal an unrelated command or the agent's raw error.
+      const exact=new URLSearchParams({
+        select:"id,nonce,kind,request,status,error",
+        id:"eq."+command_id,nonce:"eq."+nonce,limit:"1"
+      });
+      const rows=await getRows(exact);
+      if(!rows)throw new Error("Cancellation reconciliation unavailable");
+      return rows;
+    }
   });
-  if(!r.ok)return response(503,{ok:false,error:"Cancellation status unavailable",
-    command_id:input.command_id,execution_outcome:"UNKNOWN",
-    retry_same_reference:true});
-  const updated=await r.json().catch(()=>null);
-  if(!Array.isArray(updated)||updated.length>1)
-    return response(503,{ok:false,error:"Cancellation receipt unavailable",
-      command_id:input.command_id,execution_outcome:"UNKNOWN",
-      retry_same_reference:true});
-  if(updated.length===1){
-    if(updated[0].id!==input.command_id||updated[0].status!=="cancelled")
-      return response(503,{ok:false,error:"Invalid cancellation receipt",
-        command_id:input.command_id,execution_outcome:"UNKNOWN",
-        retry_same_reference:true});
-    return response(200,{ok:true,command_id:input.command_id,status:"cancelled",
-      cancelled:true,already_cancelled:false,cancellation_scope:"queued_only",
-      execution_outcome:"NOT_STARTED"});
-  }
-  // Lost race or duplicate request: inspect EXACT original task. Never write
-  // after this point, and never expose its request/payload or agent errors.
-  const check=new URLSearchParams({
-    select:"id,nonce,kind,request,status,error",
-    id:"eq."+input.command_id,nonce:"eq."+input.nonce,limit:"1"
-  });
-  const rows=await getRows(check);
-  if(!rows)return response(503,{ok:false,error:"Cancellation reconciliation unavailable",
-    command_id:input.command_id,execution_outcome:"UNKNOWN",
-    retry_same_reference:true});
-  if(rows.length!==1)return response(404,{ok:false,error:"Command not found"});
-  const classified=classifyCancelAfterRace(rows[0],ref,OWNER,DEVICE);
-  if(!classified)return response(404,{ok:false,error:"Command not found"});
-  return response(classified.ok?200:409,classified);
+  return response(result.http_status,result.body);
 }
+
 async function pollWindows(input:any):Promise<Response>{
   const id=input.command_id,nonce=input.nonce;
   if(!Number.isSafeInteger(id)||id<1||typeof nonce!=="string"||!NONCE.test(nonce))
