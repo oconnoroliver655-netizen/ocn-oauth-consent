@@ -253,3 +253,57 @@ test("invalid original reference causes no database call",async()=>{
   assert.equal(outcome.http_status,400);
   assert.equal(outcome.body.ok,false);
 });
+
+test("invalid binding rejects before any database access",async()=>{
+  let calls=0;
+  const adapters={
+    patch:async()=>{calls++;return [];},
+    lookup:async()=>{calls++;return [];}
+  };
+  for(const [badOwner,badDevice] of [
+    ["",device],[owner,""],[null,device],[owner,null]
+  ]){
+    const r=await resolveQueuedCancel(ref,badOwner,badDevice,adapters);
+    assert.equal(r.http_status,400);
+    assert.equal(r.body.ok,false);
+  }
+  assert.equal(calls,0);
+});
+
+test("deterministic 500-case cancellation and claim matrix preserves safety invariants",async()=>{
+  const states=["queued","claimed","uploading","completed","failed","needs_review"];
+  let successes=0,conflicts=0,uncertain=0;
+  for(let i=0;i<500;i++){
+    let current=row(states[i%states.length]),writes=0,reads=0;
+    const result=await resolveQueuedCancel(ref,owner,device,{
+      patch:async filter=>{
+        writes++;
+        assert.equal(filter.get("status"),"eq.queued");
+        assert.equal(filter.get("nonce"),"eq."+nonce);
+        if(current.status==="queued"){
+          current=row("cancelled",{error:"QUEUED_OWNER_CANCELLED"});
+          if(i%7===0)throw new Error("reply lost after commit");
+          return [{id:ref.command_id,status:"cancelled"}];
+        }
+        if(i%13===0)throw new Error("reply lost before commit");
+        return [];
+      },
+      lookup:async()=>{
+        reads++;
+        if(i%37===0)throw new Error("lookup unavailable");
+        return [current];
+      }
+    });
+    assert.equal(writes,1);
+    assert.ok(reads<=1);
+    assert.ok(!JSON.stringify(result).includes("NEVER_EXPOSE"));
+    if(result.body.cancelled){
+      successes++;
+      assert.equal(current.status,"cancelled");
+      assert.equal(result.body.execution_outcome,"NOT_STARTED");
+    }else if(result.http_status===409)conflicts++;
+    else if(result.http_status===503)uncertain++;
+    else assert.fail("Unexpected cancellation state "+result.http_status);
+  }
+  assert.ok(successes>0 && conflicts>0 && uncertain>0);
+});
