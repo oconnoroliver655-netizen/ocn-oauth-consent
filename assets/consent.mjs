@@ -2,7 +2,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.117.3?bundl
 import { CONFIG } from "./config.mjs";
 import {
   isConfigured, getAuthorizationId, isOwner, authorizeDetails,
-  matchingCallback, classifyOAuthCallback
+  matchingCallback, classifyOAuthCallback, returnToConsent
 } from "./guards.mjs";
 import { describeSignInError } from "./auth-email-errors.mjs";
 
@@ -115,7 +115,7 @@ async function main() {
     return;
   }
   const sb = createClient(CONFIG.supabaseUrl, CONFIG.publishableKey, {
-    auth: { flowType: "pkce", detectSessionInUrl: false, persistSession: true, autoRefreshToken: true }
+    auth: { flowType: "pkce", detectSessionInUrl: true, persistSession: true, autoRefreshToken: true }
   });
   const identity = await sb.auth.getUser();
   if (identity?.data?.user && !identity.error) {
@@ -142,7 +142,7 @@ async function main() {
     try {
       const { error } = await sb.auth.signInWithOtp({
         email,
-        options: { shouldCreateUser: false }
+        options: { shouldCreateUser: false, emailRedirectTo: returnToConsent(window.location.href, authorizationId) }
       });
       if (error) {
         report(describeSignInError(error));
@@ -151,7 +151,7 @@ async function main() {
       requestedEmail = email;
       emailInput.readOnly = true;
       otpForm.hidden = false;
-      report("A sign-in email was requested. Enter its numeric code below; do not follow a sign-in link or switch browsers. If the email contains only a link, the Supabase OTP mail template still needs configuring.");
+      report("A sign-in email was requested. If it contains a numeric code, enter it below. If it still contains only a legacy sign-in link, open that link in this same browser context until the Supabase email template is switched. Avoid repeated email requests.");
       codeInput.focus();
     } catch {
       report(describeSignInError(null));
