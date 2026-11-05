@@ -46,7 +46,7 @@ export function validWindowsCall(tool,args){
        validBrowserPayload(args.operation,args.payload));
   return false;
 }
-export async function callWindowsOperation(bearer,tool,args){
+export async function callWindowsOperation(bearer,tool,args,{timeout_ms=30000}={}){
   if(typeof bearer!=="string"||!bearer.startsWith("Bearer ")||bearer.length>8200)
     return {unauthorized:true};
   if(!validWindowsCall(tool,args))return {error:"Invalid Windows operation arguments"};
@@ -56,7 +56,8 @@ export async function callWindowsOperation(bearer,tool,args){
   try{
     const r=await fetch(EDGE,{method:"POST",
       headers:{"authorization":bearer,"content-type":"application/json"},
-      body:JSON.stringify(payload),signal:AbortSignal.timeout(30000)});
+      body:JSON.stringify(payload),signal:AbortSignal.timeout(
+        Number.isSafeInteger(timeout_ms)?Math.min(30000,Math.max(100,timeout_ms)):30000)});
     if(r.status===401)return {unauthorized:true};
     const response=await r.json();
     if(!r.ok||response?.ok!==true)return {error:response?.error||"Windows execution unavailable"};
@@ -108,7 +109,8 @@ export async function runWindowsOperation(bearer,args,{
   while(now()<deadline){
     await pause(Math.min(600,Math.max(0,deadline-now())));
     const polled=await invoke(bearer,"poll_windows_operation",
-      {command_id:original.command_id,nonce:original.nonce});
+      {command_id:original.command_id,nonce:original.nonce},
+      {timeout_ms:Math.max(100,deadline-now())});
     if(polled.value){
       if(TERMINAL_STATES.has(polled.value.status))
         return {value:{...polled.value,command_id:original.command_id,
