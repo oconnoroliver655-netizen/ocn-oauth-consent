@@ -44,3 +44,47 @@ export function classifyCancelAfterRace(row,input,owner,device){
       retry_same_reference:row.status==="queued"};
   return null;
 }
+
+
+// Explicit, testable cancellation protocol. Network adapters are injected by
+// the Edge handler; neither the decision function nor its tests access SQL.
+// A returned UNKNOWN is not proof the cancellation did or did not commit.
+export async function resolveQueuedCancel(input,owner,device,{patch,lookup}={}){
+  if(!validCancelReference(input))
+    return {http_status:400,body:{ok:false,error:"Invalid command reference"}};
+  if(typeof patch!=="function"||typeof lookup!=="function")
+    throw new TypeError("Cancellation adapters must be provided");
+  const uncertain=(reason)=>({http_status:503,body:{
+    ok:false,command_id:input.command_id,cancelled:false,
+    error:reason,execution_outcome:"UNKNOWN",retry_same_reference:true
+  }});
+  let updated;
+  try{
+    updated=await patch(queuedCancelFilter(input,owner,device));
+  }catch{return uncertain("Cancellation status unavailable");}
+  if(!Array.isArray(updated)||updated.length>1)
+    return uncertain("Cancellation receipt unavailable");
+  if(updated.length===1){
+    if(updated[0].id!==input.command_id||updated[0].status!=="cancelled")
+      return uncertain("Invalid cancellation receipt");
+    return {http_status:200,body:{
+      ok:true,command_id:input.command_id,status:"cancelled",
+      cancelled:true,already_cancelled:false,cancellation_scope:"queued_only",
+      execution_outcome:"NOT_STARTED"
+    }};
+  }
+  // Lost atomic race (or replay after lost response). Read the SAME identity,
+  // and never issue another PATCH based on the result of this read.
+  let rows;
+  try{rows=await lookup(input);}catch{
+    return uncertain("Cancellation reconciliation unavailable");
+  }
+  if(!Array.isArray(rows)||rows.length>1)
+    return uncertain("Cancellation reconciliation unavailable");
+  if(rows.length===0)return {http_status:404,body:{
+    ok:false,error:"Command not found"}};
+  const classified=classifyCancelAfterRace(rows[0],input,owner,device);
+  if(!classified)return {http_status:404,body:{
+    ok:false,error:"Command not found"}};
+  return {http_status:classified.ok?200:409,body:classified};
+}
