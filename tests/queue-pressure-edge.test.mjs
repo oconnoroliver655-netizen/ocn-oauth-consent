@@ -111,3 +111,22 @@ test("Edge pressure selector requests exact count and owner-device scoping",()=>
   for (const method of ["POST","PATCH","DELETE"])assert.ok(!section.includes('method:"'+method+'"'));
   assert.ok(!section.includes('select:"request'));
 });
+
+test("expired claimed command is a bounded needs_review receipt, never a false 404",()=>{
+  const index=readFileSync(new URL("../supabase/functions/ocn-owner-health-dispatch/index.ts",
+    import.meta.url),"utf8");
+  const start=index.indexOf("async function pollWindows(");
+  const end=index.indexOf("\nDeno.serve(",start);
+  assert.ok(start>=0 && end>start);
+  const poll=index.slice(start,end);
+  assert.match(index,/const STATE = new Set\([^\n]*"needs_review"/);
+  assert.ok(poll.includes('if(row.status==="needs_review")'));
+  assert.ok(poll.includes('review_required:true,retry_safe:false'));
+  assert.ok(poll.includes('execution_outcome:"UNKNOWN"'));
+  assert.ok(poll.includes('command_id:id'));
+  assert.ok(!poll.includes('error:row.error'));
+  assert.ok(!poll.includes('request:req'));
+  // The SQL row is never mutated by checking a task's state.
+  for(const verb of ["POST","PATCH","DELETE"])
+    assert.ok(!poll.includes('method:"'+verb+'"'));
+});
