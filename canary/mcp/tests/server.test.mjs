@@ -78,7 +78,7 @@ test("OAuth test route advertises protected probe and returns MCP tool-level cha
   const names=new Set(list.map(t=>t.name));
   for(const required of ["browser_status","browser_connect","browser_tab_list","browser_snapshot","browser_batch",
     "rea_status","rea_list_tools","rea_describe_tool","rea_submit_tool","rea_poll",
-    "rea_chunk","rea_cancel","rea_list_prompts","rea_get_prompt","submit_admin_powershell","submit_routed_windows_operation","run_windows_operation","read_file"]){
+    "rea_chunk","rea_cancel","rea_list_prompts","rea_get_prompt","submit_admin_powershell","submit_routed_windows_operation","run_windows_operation","read_file","read_file_lines","search_code"]){
     assert.ok(names.has(required),"Missing registered MCP tool: "+required);
   }
   const byName=new Map(list.map(t=>[t.name,t]));
@@ -91,6 +91,8 @@ test("OAuth test route advertises protected probe and returns MCP tool-level cha
   assert.equal(byName.get("submit_windows_operation").annotations.destructiveHint,true);
   assert.equal(byName.get("poll_windows_operation").annotations.readOnlyHint,true);
   assert.equal(byName.get("run_windows_operation").annotations.destructiveHint,true);
+  assert.equal(byName.get("read_file_lines").annotations.readOnlyHint,true);
+  assert.equal(byName.get("search_code").annotations.readOnlyHint,true);
   assert.deepEqual(list[1].securitySchemes,[{type:"oauth2",scopes:["openid","email"]}]);
   for(const auth of [{},{"authorization":"Bearer forged"}]){
     const r=await httpFetch(base+"/mcp-oauth",{method:"POST",headers:headers(auth),
@@ -114,6 +116,8 @@ test("health-only tools require signed owner and never expose file/shell",async(
     ["submit_windows_operation",{operation:"desktop_health",payload:{}}],
     ["run_windows_operation",{operation:"desktop_health",payload:{},wait_seconds:1}],
     ["read_file",{path:"D:\\projects\\README.md",wait_seconds:1}],
+    ["read_file_lines",{path:"D:\\projects\\README.md",offset:0,length:20}],
+    ["search_code",{path:"D:\\projects",query:"test",limit:3}],
     ["submit_admin_powershell",{script:"whoami /user"}],
     ["submit_routed_windows_operation",{operation:"powershell",payload:{script:"whoami"},intent:"system_maintenance"}],
     ["poll_windows_operation",{command_id:1,nonce:"a".repeat(32)}]
@@ -135,6 +139,8 @@ test("health-only tools require signed owner and never expose file/shell",async(
     {name:"run_windows_operation",arguments:{operation:"file_read",payload:{},wait_seconds:99}},
     {name:"read_file",arguments:{path:"relative.txt"}},
     {name:"read_file",arguments:{path:"C:\\bad.txt",run_as:"system"}},
+    {name:"read_file_lines",arguments:{path:"D:\\valid.txt",length:1001}},
+    {name:"search_code",arguments:{path:"D:\\valid.txt",query:"",run_as:"system"}},
     {name:"submit_admin_powershell",arguments:{script:"whoami",run_as:"system"}},
     {name:"submit_routed_windows_operation",arguments:{operation:"unknown",payload:{}}},
     {name:"poll_windows_operation",arguments:{command_id:1,nonce:"wrong"}},
