@@ -103,3 +103,28 @@ test("failed terminal status remains failed, not successful",async()=>{
   assert.equal(r.value.status,"failed");
   assert.equal(r.value.execution_state,"FAILED");
 });
+
+test("outcome-uncertain needs_review stops wait, retains task identity and never retries",async()=>{
+  let now=0;
+  const calls=[];
+  const claimed={ok:true,command_id:91,status:"needs_review",
+    execution_outcome:"UNKNOWN",review_required:true,retry_safe:false};
+  const r=await runWindowsOperation("Bearer mocked",{
+    operation:"file_write",payload:{path:"C:\\test.txt",content:"no replay"},wait_seconds:2
+  },{
+    invoke:async(_,tool,args)=>{
+      calls.push({tool,args});
+      return {value:tool==="submit_windows_operation"?queued:claimed};
+    },
+    now:()=>now,pause:async ms=>{now+=ms;}
+  });
+  assert.equal(r.value.status,"needs_review");
+  assert.equal(r.value.terminal,true); // queue lifecycle only, not execution success
+  assert.equal(r.value.execution_outcome,"UNKNOWN");
+  assert.equal(r.value.review_required,true);
+  assert.equal(r.value.retry_safe,false);
+  assert.equal(r.value.command_id,91);
+  assert.equal(r.value.nonce,nonce);
+  assert.equal(calls.filter(x=>x.tool==="submit_windows_operation").length,1);
+  assert.equal(calls.filter(x=>x.tool==="poll_windows_operation").length,1);
+});
