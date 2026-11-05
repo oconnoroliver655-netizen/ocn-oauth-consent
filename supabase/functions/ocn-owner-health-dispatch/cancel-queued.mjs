@@ -58,13 +58,17 @@ export async function resolveQueuedCancel(input,owner,device,{patch,lookup}={}){
     ok:false,command_id:input.command_id,cancelled:false,
     error:reason,execution_outcome:"UNKNOWN",retry_same_reference:true
   }});
-  let updated;
+  let updated,patchUncertain=false;
   try{
     updated=await patch(queuedCancelFilter(input,owner,device));
-  }catch{return uncertain("Cancellation status unavailable");}
-  if(!Array.isArray(updated)||updated.length>1)
+  }catch{
+    // The CAS may have committed before the HTTP response was lost.
+    // Resolve its actual state with one *read*, never a blind second write.
+    patchUncertain=true;
+  }
+  if(!patchUncertain && (!Array.isArray(updated)||updated.length>1))
     return uncertain("Cancellation receipt unavailable");
-  if(updated.length===1){
+  if(!patchUncertain && updated.length===1){
     if(updated[0].id!==input.command_id||updated[0].status!=="cancelled")
       return uncertain("Invalid cancellation receipt");
     return {http_status:200,body:{
@@ -73,16 +77,19 @@ export async function resolveQueuedCancel(input,owner,device,{patch,lookup}={}){
       execution_outcome:"NOT_STARTED"
     }};
   }
-  // Lost atomic race (or replay after lost response). Read the SAME identity,
-  // and never issue another PATCH based on the result of this read.
+  // Lost atomic race, duplicate request, or missing PATCH response: read the
+  // exact original row once. NEVER repeat the underlying Windows task or CAS.
   let rows;
   try{rows=await lookup(input);}catch{
     return uncertain("Cancellation reconciliation unavailable");
   }
   if(!Array.isArray(rows)||rows.length>1)
     return uncertain("Cancellation reconciliation unavailable");
-  if(rows.length===0)return {http_status:404,body:{
-    ok:false,error:"Command not found"}};
+  if(rows.length===0){
+    // Following a transport failure, absence cannot prove what happened.
+    return patchUncertain ? uncertain("Cancellation reference unverified") :
+      {http_status:404,body:{ok:false,error:"Command not found"}};
+  }
   const classified=classifyCancelAfterRace(rows[0],input,owner,device);
   if(!classified)return {http_status:404,body:{
     ok:false,error:"Command not found"}};
