@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { CONFIG } from "../assets/config.mjs";
 import {
   isConfigured, getAuthorizationId, matchingCallback, isOwner,
-  authorizeDetails, returnToConsent
+  authorizeDetails, returnToConsent, classifyOAuthCallback
 } from "../assets/guards.mjs";
 
 const ID = "f".repeat(32);
@@ -113,4 +113,36 @@ test("consent HTML exposes no credentials or unsolicited network forms", () => {
   assert.match(html,/Content-Security-Policy/);
   assert.match(html,/referrer" content="no-referrer"/);
   assert.doesNotMatch(html,/Runtime API Key:|service_role|sb_secret_|password type="text"/);
+});
+
+
+test("a callback requires one state and exactly one OAuth outcome", () => {
+  const base = C.approvedRedirectUri;
+  assert.equal(classifyOAuthCallback(base+"?code=validcode&state=opaque",base),"approved");
+  assert.equal(classifyOAuthCallback(base+"?error=access_denied&state=opaque",base),"denied");
+  for (const url of [
+    base, base+"?state=opaque", base+"?code=validcode",
+    base+"?error=access_denied", base+"?code=validcode&state=",
+    base+"?code=validcode&state=s&state=t",
+    base+"?code=validcode&code=again&state=s",
+    base+"?code=validcode&error=access_denied&state=s",
+    base+"?state=s&error=access_denied&error=invalid_request",
+    "https://evil.example/connector/oauth/callback?code=c&state=s",
+    base+"?code=c&state=s&next=https://evil.example"
+  ]) assert.equal(classifyOAuthCallback(url,base),null,url);
+});
+
+test("consent uses in-page email OTP without cross-app Magic Link navigation", () => {
+  const js=readFileSync(new URL("../assets/consent.mjs",import.meta.url),"utf8");
+  assert.match(js,/verifyOtp\(\{ email: requestedEmail, token, type: "email" \}\)/);
+  assert.match(js,/signInWithOtp\(\{/);
+  assert.match(js,/shouldCreateUser: false/);
+  assert.match(js,/detectSessionInUrl: false/);
+  assert.match(js,/attempts >= 3/);
+  assert.match(js,/classifyOAuthCallback/);
+  assert.doesNotMatch(js,/emailRedirectTo:|window\.location\.search\s*=|innerHTML\s*=/);
+  const html=readFileSync(new URL("../oauth/consent/index.html",import.meta.url),"utf8");
+  assert.match(html,/form id="otp" hidden/);
+  assert.match(html,/id="code"[^>]+autocomplete="one-time-code"/);
+  assert.match(html,/id="verify"/);
 });
