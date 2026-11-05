@@ -18,8 +18,15 @@
       <h2>Sign in with your registered email</h2>
       <label for="email">Email address</label>
       <input id="email" type="email" autocomplete="email" maxlength="254" required>
-      <button type="submit" id="send">Send sign-in email</button>
-      <p class="hint">Sign-in is limited to an existing owner account; this page cannot create a new account.</p>
+      <button type="submit" id="send">Send one-time email code</button>
+      <p class="hint">Sign-in is limited to an existing owner account; this page cannot create a new account. Keep this tab open while checking Gmail.</p>
+    </form>
+    <form id="otp" hidden>
+      <h2>Verify your email</h2>
+      <label for="code">One-time verification code</label>
+      <input id="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6,8}" maxlength="8" minlength="6" required aria-describedby="code-hint">
+      <p class="hint" id="code-hint">Enter the numeric code from your email here. Do not open a login link in another browser.</p>
+      <button type="submit" id="verify">Verify code</button>
     </form>
     <section id="review" hidden>
       <h2>Application requesting identity access</h2>
