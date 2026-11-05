@@ -6,8 +6,8 @@ const EDGE="https://ouxniljtjxnrkwakkvbv.supabase.co/functions/v1/ocn-owner-heal
 const OPERATIONS=[
   "file_read","file_read_lines","file_write","file_append",
   "powershell","exec","desktop_health","window_list","screenshot",
-  "uia_tree","code_search","audit_recent","process_sessions",
-  "terminal_sessions","desktop_lease_status",
+  "uia_tree","code_search","audit_recent","process_sessions","process_read",
+  "terminal_sessions","terminal_read","desktop_lease_status",
   ...BROWSER_OPERATIONS
 ];
 export const WINDOWS_TOOLS=[
@@ -275,6 +275,51 @@ export function directSessionToWindowsCall(name,args){
   if(!validDirectSessionCall(name,args))throw new TypeError("Invalid session list arguments");
   return {operation:SESSION_OPERATIONS.get(name),payload:{},
     wait_seconds:args.wait_seconds??8};
+}
+
+// Explicit offsets make these session-output reads observational: the native
+// Windows process and ConPTY readers advance their shared cursor ONLY for
+// negative offsets. Session IDs are OCN's original signed operation nonces.
+const SESSION_READ_OPERATIONS=new Map([
+  ["read_process_output",{operation:"process_read",field:"session_id"}],
+  ["read_terminal_output",{operation:"terminal_read",field:"terminal_id"}]
+]);
+export const SESSION_READ_TOOLS=[...SESSION_READ_OPERATIONS].map(([name,{field}])=>({
+  name,
+  description:name==="read_process_output"
+    ?"Read up to 64 KiB of UTF-8 process output from an existing owner-created OCN session at an explicit byte offset, without changing the read cursor. Returns next_offset or the ORIGINAL task receipt for polling; no process launch, stdin or termination."
+    :"Read up to 64 KiB of UTF-8 ConPTY output from an existing owner-created OCN terminal at an explicit byte offset, without changing the read cursor. Returns next_offset or the ORIGINAL task receipt for polling; no terminal launch, stdin or termination.",
+  inputSchema:{type:"object",properties:{
+    [field]:{type:"string",pattern:"^[0-9a-f]{32}$"},
+    offset:{type:"integer",minimum:0,maximum:1000000000},
+    max_bytes:{type:"integer",minimum:1,maximum:65536},
+    wait_seconds:{type:"integer",minimum:0,maximum:12}
+  },required:[field],additionalProperties:false},
+  securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
+  annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
+}));
+export function validSessionReadCall(name,args){
+  const entry=SESSION_READ_OPERATIONS.get(name);
+  if(!entry||!args||typeof args!=="object"||Array.isArray(args))return false;
+  const allowed=[entry.field,"offset","max_bytes","wait_seconds"];
+  if(Object.keys(args).some(k=>!allowed.includes(k)))return false;
+  if(typeof args[entry.field]!=="string"||!pattern.test(args[entry.field]))
+    return false;
+  if(args.offset!==undefined && (!Number.isSafeInteger(args.offset)||
+     args.offset<0||args.offset>1000000000))return false;
+  if(args.max_bytes!==undefined && (!Number.isSafeInteger(args.max_bytes)||
+     args.max_bytes<1||args.max_bytes>65536))return false;
+  if(args.wait_seconds!==undefined && (!Number.isSafeInteger(args.wait_seconds)||
+     args.wait_seconds<0||args.wait_seconds>12))return false;
+  return true;
+}
+export function sessionReadToWindowsCall(name,args){
+  if(!validSessionReadCall(name,args))throw new TypeError("Invalid session read arguments");
+  const entry=SESSION_READ_OPERATIONS.get(name);
+  return {operation:entry.operation,payload:{
+    [entry.field]:args[entry.field],offset:args.offset??0,
+    max_bytes:args.max_bytes??16384,wait_ms:0
+  },wait_seconds:args.wait_seconds??8};
 }
 
 // Discoverable alias for the existing owner-bound SYSTEM execution plane.
