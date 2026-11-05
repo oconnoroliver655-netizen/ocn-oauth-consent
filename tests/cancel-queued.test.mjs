@@ -150,25 +150,56 @@ test("cancelled wins the queued race: later claim cannot start",async()=>{
   assert.equal(claimSucceeded,false);
   assert.equal(state,"cancelled");
 });
-test("lost cancellation response does not replay task or misreport success",async()=>{
-  let state=row("queued"),attempts=0;
+test("lost cancellation response is reconciled by ONE read without replaying PATCH",async()=>{
+  let state=row("queued"),writes=0,reads=0;
   const patch=async()=>{
-    attempts++;
-    if(state.status==="queued")state=row("cancelled",{error:"QUEUED_OWNER_CANCELLED"});
-    if(attempts===1)throw new Error("network dropped after commit");
-    return [];
+    writes++;
+    state=row("cancelled",{error:"QUEUED_OWNER_CANCELLED"});
+    throw new Error("network dropped after commit");
   };
-  const lookup=async()=>[state];
-  const uncertain=await resolveQueuedCancel(ref,owner,device,{patch,lookup});
-  assert.equal(uncertain.http_status,503);
-  assert.equal(uncertain.body.cancelled,false);
-  assert.equal(uncertain.body.execution_outcome,"UNKNOWN");
-  assert.equal(uncertain.body.command_id,ref.command_id);
-  assert.equal(uncertain.body.retry_same_reference,true);
-  const retry=await resolveQueuedCancel(ref,owner,device,{patch,lookup});
-  assert.equal(retry.http_status,200);
-  assert.equal(retry.body.already_cancelled,true);
-  assert.equal(attempts,2);
+  const lookup=async()=>{
+    reads++;
+    return [state];
+  };
+  const reconciled=await resolveQueuedCancel(ref,owner,device,{patch,lookup});
+  assert.equal(reconciled.http_status,200);
+  assert.equal(reconciled.body.cancelled,true);
+  assert.equal(reconciled.body.already_cancelled,true);
+  assert.equal(reconciled.body.execution_outcome,"NOT_STARTED");
+  assert.equal(writes,1);
+  assert.equal(reads,1);
+});
+test("lost cancellation response with unavailable reconciliation remains UNKNOWN",async()=>{
+  let writes=0,reads=0;
+  const unverified=await resolveQueuedCancel(ref,owner,device,{
+    patch:async()=>{writes++;throw new Error("timeout");},
+    lookup:async()=>{reads++;throw new Error("database unavailable");}
+  });
+  assert.equal(unverified.http_status,503);
+  assert.equal(unverified.body.cancelled,false);
+  assert.equal(unverified.body.execution_outcome,"UNKNOWN");
+  assert.equal(unverified.body.command_id,ref.command_id);
+  assert.equal(unverified.body.retry_same_reference,true);
+  assert.equal(writes,1);
+  assert.equal(reads,1);
+});
+test("lost cancellation response with missing row does not claim success",async()=>{
+  const r=await resolveQueuedCancel(ref,owner,device,{
+    patch:async()=>{throw new Error("network timeout");},
+    lookup:async()=>[]
+  });
+  assert.equal(r.http_status,503);
+  assert.equal(r.body.cancelled,false);
+  assert.equal(r.body.execution_outcome,"UNKNOWN");
+});
+test("lost cancellation response after claim returns an explicit non-cancelled receipt",async()=>{
+  const r=await resolveQueuedCancel(ref,owner,device,{
+    patch:async()=>{throw new Error("response lost");},
+    lookup:async()=>[row("claimed")]
+  });
+  assert.equal(r.http_status,409);
+  assert.equal(r.body.cancelled,false);
+  assert.equal(r.body.execution_outcome,"UNKNOWN");
 });
 test("mismatched owner/device and nonce resolve to generic not found with no leaks",async()=>{
   const mismatch=[
