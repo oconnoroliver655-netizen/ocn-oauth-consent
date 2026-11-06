@@ -78,7 +78,9 @@ test("OAuth test route advertises protected probe and returns MCP tool-level cha
   const names=new Set(list.map(t=>t.name));
   for(const required of ["browser_status","browser_connect","browser_tab_list","browser_snapshot","browser_batch",
     "rea_status","rea_list_tools","rea_describe_tool","rea_submit_tool","rea_poll",
-    "rea_chunk","rea_cancel","rea_list_prompts","rea_get_prompt","submit_admin_powershell","submit_routed_windows_operation","run_windows_operation","read_file","read_file_lines","search_code","list_process_sessions","list_terminal_sessions","read_process_output","read_terminal_output"]){
+    "rea_chunk","rea_cancel","rea_list_prompts","rea_get_prompt","submit_admin_powershell","submit_routed_windows_operation","run_windows_operation","read_file","read_file_lines","search_code","list_process_sessions","list_terminal_sessions","read_process_output","read_terminal_output",
+    "desktop_window_list","desktop_uia_tree","desktop_lease_acquire",
+    "desktop_lease_renew","desktop_lease_release"]){
     assert.ok(names.has(required),"Missing registered MCP tool: "+required);
   }
   const byName=new Map(list.map(t=>[t.name,t]));
@@ -99,6 +101,14 @@ test("OAuth test route advertises protected probe and returns MCP tool-level cha
   assert.equal(byName.get("list_terminal_sessions").annotations.readOnlyHint,true);
   assert.equal(byName.get("read_process_output").annotations.readOnlyHint,true);
   assert.equal(byName.get("read_terminal_output").annotations.readOnlyHint,true);
+  for(const name of ["desktop_window_list","desktop_uia_tree"]){
+    assert.equal(byName.get(name).annotations.readOnlyHint,true);
+    assert.equal(byName.get(name).annotations.destructiveHint,false);
+  }
+  for(const name of ["desktop_lease_acquire","desktop_lease_renew","desktop_lease_release"]){
+    assert.equal(byName.get(name).annotations.destructiveHint,false);
+    assert.deepEqual(byName.get(name).securitySchemes,[{type:"oauth2",scopes:["openid","email"]}]);
+  }
   assert.deepEqual(list[1].securitySchemes,[{type:"oauth2",scopes:["openid","email"]}]);
   for(const auth of [{},{"authorization":"Bearer forged"}]){
     const r=await httpFetch(base+"/mcp-oauth",{method:"POST",headers:headers(auth),
@@ -128,6 +138,11 @@ test("health-only tools require signed owner and never expose file/shell",async(
     ["list_terminal_sessions",{}],
     ["read_process_output",{session_id:"a".repeat(32),offset:0,max_bytes:1000}],
     ["read_terminal_output",{terminal_id:"a".repeat(32),offset:0,max_bytes:1000}],
+    ["desktop_window_list",{query:"Notepad",limit:20}],
+    ["desktop_uia_tree",{hwnd:123456,max_depth:2}],
+    ["desktop_lease_acquire",{owner:"ocn_worker_alpha",ttl_seconds:90}],
+    ["desktop_lease_renew",{owner:"ocn_worker_alpha",lease_id:"a".repeat(32)}],
+    ["desktop_lease_release",{owner:"ocn_worker_alpha",lease_id:"a".repeat(32)}],
     ["submit_admin_powershell",{script:"whoami /user"}],
     ["submit_routed_windows_operation",{operation:"powershell",payload:{script:"whoami"},intent:"system_maintenance"}],
     ["poll_windows_operation",{command_id:1,nonce:"a".repeat(32)}],
@@ -156,6 +171,14 @@ test("health-only tools require signed owner and never expose file/shell",async(
     {name:"list_terminal_sessions",arguments:{wait_seconds:99}},
     {name:"read_process_output",arguments:{session_id:"a".repeat(32),offset:-1}},
     {name:"read_terminal_output",arguments:{terminal_id:"a".repeat(32),run_as:"system"}},
+    {name:"desktop_window_list",arguments:{limit:500}},
+    {name:"desktop_window_list",arguments:{run_as:"system"}},
+    {name:"desktop_uia_tree",arguments:{hwnd:0}},
+    {name:"desktop_uia_tree",arguments:{hwnd:99,max_depth:9}},
+    {name:"desktop_lease_acquire",arguments:{owner:"x"}},
+    {name:"desktop_lease_acquire",arguments:{owner:"ocn_worker_alpha",run_as:"system"}},
+    {name:"desktop_lease_renew",arguments:{owner:"ocn_worker_alpha",lease_id:"fake"}},
+    {name:"desktop_lease_release",arguments:{owner:"ocn_worker_alpha",lease_id:"a".repeat(32),ttl_seconds:90}},
     {name:"submit_admin_powershell",arguments:{script:"whoami",run_as:"system"}},
     {name:"submit_routed_windows_operation",arguments:{operation:"unknown",payload:{}}},
     {name:"poll_windows_operation",arguments:{command_id:1,nonce:"wrong"}},
