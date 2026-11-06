@@ -184,6 +184,7 @@ const WINDOWS_OPS = new Set([
   "powershell","exec","desktop_health","window_list","screenshot",
   "uia_tree","code_search","audit_recent","process_sessions","process_read",
   "terminal_sessions","terminal_read","desktop_lease_status",
+  "desktop_lease_acquire","desktop_lease_renew","desktop_lease_release",
   ...BROWSER_OPERATIONS
 ]);
 const TERMINAL = new Set(["completed","failed","cancelled","expired"]);
@@ -191,6 +192,23 @@ function validWindowsPayload(operation:string, payload:any):boolean {
   if (!WINDOWS_OPS.has(operation) || !payload || typeof payload!=="object" ||
       Array.isArray(payload)) return false;
   const keys=Object.keys(payload);
+  if(operation==="desktop_lease_acquire" ||
+     operation==="desktop_lease_renew" ||
+     operation==="desktop_lease_release"){
+    if(typeof payload.owner!=="string" ||
+      !/^[A-Za-z0-9_.-]{3,128}$/.test(payload.owner))return false;
+    const release=operation==="desktop_lease_release";
+    const acquire=operation==="desktop_lease_acquire";
+    const allowed=release?["owner","lease_id"]:
+      acquire?["owner","ttl_seconds"]:["owner","lease_id","ttl_seconds"];
+    if(keys.some(k=>!allowed.includes(k)))return false;
+    if(!acquire && (typeof payload.lease_id!=="string" ||
+      !/^[A-Za-z0-9_-]{20,80}$/.test(payload.lease_id)))return false;
+    if(release)return keys.length===2;
+    return payload.ttl_seconds===undefined ||
+      (Number.isSafeInteger(payload.ttl_seconds) &&
+       payload.ttl_seconds>=15 && payload.ttl_seconds<=300);
+  }
   if(operation.startsWith("browser_"))return validBrowserPayload(operation,payload);
   // Existing native session output is read by an exact, non-cursor-moving
   // offset. Never accept a PID, negative offset, wait, input or launcher.
