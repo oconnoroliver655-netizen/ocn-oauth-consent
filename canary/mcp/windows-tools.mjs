@@ -8,8 +8,34 @@ const OPERATIONS=[
   "powershell","exec","desktop_health","window_list","screenshot",
   "uia_tree","code_search","audit_recent","process_sessions","process_read",
   "terminal_sessions","terminal_read","desktop_lease_status",
+  "desktop_lease_acquire","desktop_lease_renew","desktop_lease_release",
   ...BROWSER_OPERATIONS
 ];
+
+const LEASE_OPERATIONS=new Set([
+  "desktop_lease_acquire","desktop_lease_renew","desktop_lease_release"
+]);
+const validLeaseOwner=x=>typeof x==="string"&&
+  /^[a-zA-Z0-9_.-]{3,128}$/.test(x);
+const validLeaseId=x=>typeof x==="string"&&
+  /^[a-zA-Z0-9_-]{20,80}$/.test(x);
+export function validDesktopLeasePayload(operation,payload){
+  if(!LEASE_OPERATIONS.has(operation)||!payload||
+     typeof payload!=="object"||Array.isArray(payload))return false;
+  const keys=Object.keys(payload);
+  if(!validLeaseOwner(payload.owner))return false;
+  if(operation==="desktop_lease_release")
+    return keys.length===2 && keys.includes("owner") && keys.includes("lease_id") &&
+      validLeaseId(payload.lease_id);
+  const allowed=operation==="desktop_lease_acquire"?
+    ["owner","ttl_seconds"]:["owner","lease_id","ttl_seconds"];
+  if(keys.some(k=>!allowed.includes(k)))return false;
+  if(operation==="desktop_lease_renew"&&!validLeaseId(payload.lease_id))return false;
+  return payload.ttl_seconds===undefined ||
+    (Number.isSafeInteger(payload.ttl_seconds)&&
+     payload.ttl_seconds>=15&&payload.ttl_seconds<=300);
+}
+
 export const WINDOWS_TOOLS=[
   {
     name:"submit_windows_operation",
@@ -53,7 +79,9 @@ export function validWindowsCall(tool,args){
     return keys==="operation,payload" && OPERATIONS.includes(args.operation) &&
       args.payload!==null&&typeof args.payload==="object"&&!Array.isArray(args.payload) &&
       (!BROWSER_OPERATIONS.includes(args.operation) ||
-       validBrowserPayload(args.operation,args.payload));
+       validBrowserPayload(args.operation,args.payload)) &&
+      (!LEASE_OPERATIONS.has(args.operation) ||
+       validDesktopLeasePayload(args.operation,args.payload));
   return false;
 }
 export async function callWindowsOperation(bearer,tool,args,{timeout_ms=30000,fetchFn=fetch}={}){
@@ -352,6 +380,117 @@ export function sessionReadToWindowsCall(name,args){
     [entry.field]:args[entry.field],offset:args.offset??0,
     max_bytes:args.max_bytes??16384,wait_ms:0
   },wait_seconds:args.wait_seconds??8};
+}
+
+
+// Typed desktop observation: one owner-bound submission with a bounded wait.
+// These tools do not focus windows, generate input or read screenshot pixels.
+export const DESKTOP_OBSERVE_TOOLS=[
+  {
+    name:"desktop_window_list",
+    description:"List bounded visible Windows top-level windows through the existing owner-OAuth Desktop Agent. No focus change or mouse input. Returns a terminal result or the original command_id/nonce for polling.",
+    inputSchema:{type:"object",properties:{
+      query:{type:"string",maxLength:80},
+      limit:{type:"integer",minimum:1,maximum:100},
+      wait_seconds:{type:"integer",minimum:0,maximum:12}
+    },additionalProperties:false},
+    securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
+    annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
+  },
+  {
+    name:"desktop_uia_tree",
+    description:"Read bounded UI Automation nodes under one exact live HWND. Read-only; never invokes a control or changes focus. Returns a verified result or the original command_id/nonce for polling.",
+    inputSchema:{type:"object",properties:{
+      hwnd:{type:"integer",minimum:1},
+      max_depth:{type:"integer",minimum:0,maximum:6},
+      max_nodes:{type:"integer",minimum:1,maximum:250},
+      wait_seconds:{type:"integer",minimum:0,maximum:12}
+    },required:["hwnd"],additionalProperties:false},
+    securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
+    annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
+  }
+];
+export function validDesktopObserveCall(name,args){
+  if(!args||typeof args!=="object"||Array.isArray(args)||!validWait(args))return false;
+  const keys=Object.keys(args);
+  if(name==="desktop_window_list"){
+    if(keys.some(k=>!["query","limit","wait_seconds"].includes(k)))return false;
+    if(args.query!==undefined && (typeof args.query!=="string"||
+       args.query.length>80||/[\x00-\x1f\x7f]/.test(args.query)))return false;
+    return args.limit===undefined||
+      (Number.isSafeInteger(args.limit)&&args.limit>=1&&args.limit<=100);
+  }
+  if(name==="desktop_uia_tree"){
+    if(keys.some(k=>!["hwnd","max_depth","max_nodes","wait_seconds"].includes(k)))return false;
+    if(!Number.isSafeInteger(args.hwnd)||args.hwnd<=0)return false;
+    if(args.max_depth!==undefined &&
+      (!Number.isSafeInteger(args.max_depth)||args.max_depth<0||args.max_depth>6))return false;
+    return args.max_nodes===undefined ||
+      (Number.isSafeInteger(args.max_nodes)&&args.max_nodes>=1&&args.max_nodes<=250);
+  }
+  return false;
+}
+export function desktopObserveToWindowsCall(name,args){
+  if(!validDesktopObserveCall(name,args))
+    throw new TypeError("Invalid desktop observation arguments");
+  return name==="desktop_window_list"?
+    {operation:"window_list",payload:{query:args.query??"",limit:args.limit??100},
+      wait_seconds:args.wait_seconds??8}:
+    {operation:"uia_tree",payload:{hwnd:args.hwnd,
+      max_depth:args.max_depth??4,max_nodes:args.max_nodes??150},
+      wait_seconds:args.wait_seconds??8};
+}
+
+// Desktop ownership is a coordination lease, not an OAuth or Windows privilege.
+// Input operations are intentionally NOT exposed until the native agent enforces
+// a positive active-lease + HWND/PID/foreground binding on every action.
+export const DESKTOP_LEASE_TOOLS=[
+  {
+    name:"desktop_lease_acquire",
+    description:"Acquire the existing exclusive Windows desktop input lease for a named OCN worker (15–300 seconds). No mouse/keyboard action. Returns the coordination lease ID only to the signed owner, or the original task receipt for polling.",
+    inputSchema:{type:"object",properties:{
+      owner:{type:"string",pattern:"^[a-zA-Z0-9_.-]{3,128}$"},
+      ttl_seconds:{type:"integer",minimum:15,maximum:300},
+      wait_seconds:{type:"integer",minimum:0,maximum:12}
+    },required:["owner"],additionalProperties:false},
+    securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
+    annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:false}
+  },
+  {
+    name:"desktop_lease_renew",
+    description:"Renew only the caller's matching current desktop coordination lease. Does not touch windows or simulate input; receipt must be terminal verified.",
+    inputSchema:{type:"object",properties:{
+      owner:{type:"string",pattern:"^[a-zA-Z0-9_.-]{3,128}$"},
+      lease_id:{type:"string",pattern:"^[a-zA-Z0-9_-]{20,80}$"},
+      ttl_seconds:{type:"integer",minimum:15,maximum:300},
+      wait_seconds:{type:"integer",minimum:0,maximum:12}
+    },required:["owner","lease_id"],additionalProperties:false},
+    securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
+    annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:false}
+  },
+  {
+    name:"desktop_lease_release",
+    description:"Release only the matching current desktop coordination lease. The lease ID is never a substitute for OAuth identity. Pending tasks are never replayed.",
+    inputSchema:{type:"object",properties:{
+      owner:{type:"string",pattern:"^[a-zA-Z0-9_.-]{3,128}$"},
+      lease_id:{type:"string",pattern:"^[a-zA-Z0-9_-]{20,80}$"},
+      wait_seconds:{type:"integer",minimum:0,maximum:12}
+    },required:["owner","lease_id"],additionalProperties:false},
+    securitySchemes:[{type:"oauth2",scopes:["openid","email"]}],
+    annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:false}
+  }
+];
+export function validDesktopLeaseCall(name,args){
+  if(!LEASE_OPERATIONS.has(name)||!args||typeof args!=="object"||
+     Array.isArray(args)||!validWait(args))return false;
+  const {wait_seconds,...payload}=args;
+  return validDesktopLeasePayload(name,payload);
+}
+export function desktopLeaseToWindowsCall(name,args){
+  if(!validDesktopLeaseCall(name,args))
+    throw new TypeError("Invalid desktop lease arguments");
+  const {wait_seconds,...payload}=args;
+  return {operation:name,payload,wait_seconds:wait_seconds??8};
 }
 
 // Discoverable alias for the existing owner-bound SYSTEM execution plane.
