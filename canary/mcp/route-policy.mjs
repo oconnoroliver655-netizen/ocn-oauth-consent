@@ -12,6 +12,20 @@ const MAINTENANCE=new Set(["start-service","stop-service","restart-service","set
  "set-scheduledtask","disable-scheduledtask","enable-scheduledtask",
  "enable-windowsoptionalfeature","disable-windowsoptionalfeature"]);
 const isObj=x=>x!==null&&typeof x==="object"&&!Array.isArray(x);
+const READ_GATE_KEYS=new Set(["global_nonce","global_sha256","scope",
+ "project_root","project_nonce","project_sha256"]);
+function validReadGateMetadata(proof){
+ if(!isObj(proof)||Object.keys(proof).some(k=>!READ_GATE_KEYS.has(k)))return false;
+ const nonce=x=>typeof x==="string"&&/^[0-9a-f]{32}$/.test(x);
+ const digest=x=>typeof x==="string"&&/^[0-9a-f]{64}$/.test(x);
+ if(!nonce(proof.global_nonce)||!digest(proof.global_sha256))return false;
+ if(proof.scope==="machine")
+   return !("project_root" in proof)&&!("project_nonce" in proof)&&!("project_sha256" in proof);
+ if(proof.scope==="project")
+   return typeof proof.project_root==="string"&&proof.project_root.trim().length>0&&
+          nonce(proof.project_nonce)&&digest(proof.project_sha256);
+ return false;
+}
 const deny=reason=>Object.freeze({status:"refused",reason});
 const planned=(execution_plane,operation,payload,reason)=>Object.freeze({
  status:"planned",execution_plane,operation,payload:Object.freeze({...payload}),reason});
@@ -28,6 +42,8 @@ export function planWindowsRoute(job){
  const {operation}=job,payload=job.payload??{},intent=job.intent??"auto";
  if(!isObj(payload)||!INTENTS.has(intent))return deny("INVALID_PARAMETERS");
  if("run_as" in payload)return deny("RUN_AS_OWNED_BY_ROUTER");
+ if("_policy_read_gate" in payload && !validReadGateMetadata(payload._policy_read_gate))
+   return deny("INVALID_READ_GATE_METADATA");
  if(intent==="interactive_admin")return deny("INTERACTIVE_ADMIN_EXECUTOR_NOT_DEPLOYED");
  if(BROWSER.has(operation)||DESKTOP.has(operation)){
    if(intent==="system_maintenance")return deny("INTERACTIVE_CANNOT_USE_SESSION_0");
@@ -36,7 +52,7 @@ export function planWindowsRoute(job){
  if(operation==="powershell"){
    if(typeof payload.script!=="string"||!payload.script.trim()||payload.script.length>131072)
      return deny("INVALID_SCRIPT");
-   if(Object.keys(payload).some(k=>!["script","cwd","timeout_seconds"].includes(k)))
+   if(Object.keys(payload).some(k=>!["script","cwd","timeout_seconds","_policy_read_gate"].includes(k)))
      return deny("INVALID_POWERSHELL_FIELD");
    if(payload.timeout_seconds!==undefined&&(!Number.isInteger(payload.timeout_seconds)||
       payload.timeout_seconds<1||payload.timeout_seconds>1800))return deny("INVALID_TIMEOUT");
