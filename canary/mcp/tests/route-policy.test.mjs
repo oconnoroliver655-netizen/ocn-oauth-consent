@@ -69,3 +69,37 @@ test("rejected jobs are not dispatchable",()=>{
  const p=toExistingWindowsCall({operation:"browser_status",intent:"system_maintenance",payload:{}});
  assert.equal(p.status,"refused");assert.equal("tool" in p,false);
 });
+
+test("global guide read metadata passes through with least privilege",()=>{
+ const proof={global_nonce:"a".repeat(32),global_sha256:"b".repeat(64),scope:"machine"};
+ const r=toExistingWindowsCall({operation:"powershell",intent:"user",
+   payload:{script:"Write-Output ok",_policy_read_gate:proof}});
+ assert.equal(r.status,"planned");
+ assert.equal(r.arguments.payload.run_as,"oliver");
+ assert.deepEqual(r.arguments.payload._policy_read_gate,proof);
+});
+test("malformed global read receipt is refused before dispatch",()=>{
+ const p=plan({operation:"powershell",payload:{script:"Write-Output ok",
+   _policy_read_gate:{global_nonce:"invalid",global_sha256:"b".repeat(64),scope:"machine"}}});
+ assert.deepEqual(p,{status:"refused",reason:"INVALID_READ_GATE_METADATA"});
+});
+test("project guide metadata requires both project read identifiers",()=>{
+ const proof={global_nonce:"a".repeat(32),global_sha256:"b".repeat(64),
+   scope:"project",project_root:"D:\\Repo"};
+ assert.equal(plan({operation:"powershell",payload:{script:"ok",_policy_read_gate:proof}}).reason,
+   "INVALID_READ_GATE_METADATA");
+ const valid={...proof,project_nonce:"c".repeat(32),project_sha256:"d".repeat(64)};
+ assert.equal(plan({operation:"powershell",payload:{script:"ok",_policy_read_gate:valid}}).status,
+   "planned");
+});
+test("guide metadata cannot carry unintended routing parameters",()=>{
+ const proof={global_nonce:"a".repeat(32),global_sha256:"b".repeat(64),
+   scope:"machine",run_as:"system"};
+ assert.equal(plan({operation:"powershell",payload:{script:"ok",_policy_read_gate:proof}}).reason,
+   "INVALID_READ_GATE_METADATA");
+ assert.equal(plan({operation:"powershell",payload:{script:"ok",unknown:true}}).reason,
+   "INVALID_POWERSHELL_FIELD");
+});
+test("compatibility mode still supports old callers until local gate is deployed",()=>{
+ assert.equal(plan({operation:"powershell",payload:{script:"ok"}}).status,"planned");
+});
