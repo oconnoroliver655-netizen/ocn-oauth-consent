@@ -2,7 +2,8 @@
 const BROWSER=new Set(["browser_status","browser_connect","browser_tab_list","browser_snapshot",
  "browser_navigate","browser_click","browser_type","browser_navigate_back",
  "browser_tab_select","browser_disconnect"]);
-const DESKTOP=new Set(["desktop_health","window_list","screenshot","uia_tree","desktop_lease_status"]);
+const DESKTOP=new Set(["desktop_health","window_list","screenshot","uia_tree","desktop_lease_status",
+ "desktop_lease_acquire","desktop_lease_renew","desktop_lease_release"]);
 const TYPED=new Set(["file_read","file_read_lines","file_write","file_append","code_search",
  "audit_recent","process_sessions","terminal_sessions"]);
 const SYSTEM_LAUNCH=new Set(["exec","process_start","terminal_start"]);
