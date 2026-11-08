@@ -47,7 +47,7 @@ jobs:
   # owner token, secret, OAuth client, service_role or Windows execution.
   # Runs only on the commit carrying the CI review marker below.
   upstream-native-rfc8707:
-    if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(review): upstream Go OAuth resource') }}
+    if: "${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(review): upstream Go OAuth resource') }}"
     runs-on: ubuntu-latest
     timeout-minutes: 18
     permissions:
