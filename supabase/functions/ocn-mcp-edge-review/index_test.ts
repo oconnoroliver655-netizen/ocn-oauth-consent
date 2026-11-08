@@ -165,6 +165,29 @@ Deno.test("no verification dependency always denies - decoded strings are never 
 
 Deno.test("strict verified claims require exact issuer/resource/owner/client and session consent", async () => {
   check(await authorizeOwnerRequest("Bearer signed-stub", verifier(claims), time), "valid synthetic contract denied");
+  // Upstream supabase/auth PR #2894 (OPEN, not deployed) proposes
+  // aud=["authenticated",resource], rather than this review hook's string.
+  for (const audience of [
+    ["authenticated", resource], [resource, "authenticated"],
+  ]) {
+    check(await authorizeOwnerRequest("Bearer signed-stub",
+      verifier({ ...claims, aud: audience }), time),
+      "exact dual-audience form unexpectedly rejected");
+  }
+  for (const [label, badAudience] of [
+    ["default Supabase audience only", "authenticated"],
+    ["only default in array", ["authenticated"]],
+    ["only resource in array", [resource]],
+    ["wrong resource in pair", ["authenticated", "https://ocn-mcp-ping-canary.onrender.com"]],
+    ["extra resource", ["authenticated", resource, "https://evil.invalid"]],
+    ["duplicate resource", ["authenticated", resource, resource]],
+    ["two wrong resource indicators", ["https://old.invalid", "https://evil.invalid"]],
+    ["empty array", []],
+  ] as Array<[string, OwnerClaims["aud"]]>) {
+    check(!await authorizeOwnerRequest("Bearer signed-stub",
+      verifier({ ...claims, aud: badAudience }), time),
+      "unexpected JWT audience authorized: " + label);
+  }
   for (const [name, change] of [
     ["wrong issuer", { iss: "https://evil.invalid" }],
     ["old Render resource", { aud: "https://ocn-mcp-ping-canary.onrender.com" }],
@@ -231,6 +254,19 @@ Deno.test("real ES256 signature verifies against trusted JWKS and exact owner bi
   const noConsent = { ...signedVerifier, sessionActive: async () => false };
   check(!await authorizeOwnerRequest("Bearer " + token, noConsent, time),
     "signature must not bypass server-side revocation");
+  const upstreamShape = await signedJwt(privateKey, {
+    ...claims, aud: ["authenticated", resource],
+  });
+  const upstreamVerified = await verifyEs256Jwt(upstreamShape, jwks);
+  check(Array.isArray(upstreamVerified?.aud) &&
+    upstreamVerified.aud.length === 2 &&
+    upstreamVerified.aud[0] === "authenticated" &&
+    upstreamVerified.aud[1] === resource,
+    "upstream proposed JWT audience array not cryptographically verified");
+  check(await authorizeOwnerRequest("Bearer " + upstreamShape, signedVerifier, time),
+    "real ES256 upstream-style audience array must be accepted after consent");
+  check(!await authorizeOwnerRequest("Bearer " + upstreamShape, noConsent, time),
+    "upstream-style dual-audience signed token bypassed revoked consent");
 });
 
 Deno.test("real ES256 rejects tampering, wrong key/kid, wrong algorithm and supplied key", async () => {
