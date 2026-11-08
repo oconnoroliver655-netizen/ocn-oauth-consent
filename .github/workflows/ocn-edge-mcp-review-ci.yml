@@ -1,0 +1,25 @@
+name: OCN Edge MCP isolated protocol review
+on:
+  push:
+    branches: [review/ocn-supabase-edge-mcp-20261108]
+    paths:
+      - 'supabase/functions/ocn-mcp-edge-review/**'
+      - '.github/workflows/ocn-edge-mcp-review-ci.yml'
+permissions:
+  contents: read
+concurrency:
+  group: ocn-edge-mcp-review-20261108
+  cancel-in-progress: false
+jobs:
+  protocol-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Static type and dependency check (review branch only)
+        run: deno check --no-lock supabase/functions/ocn-mcp-edge-review/index.ts
+      - name: Isolated no-secrets MCP HTTP protocol tests
+        run: deno test --no-lock --allow-net supabase/functions/ocn-mcp-edge-review/index_test.ts
