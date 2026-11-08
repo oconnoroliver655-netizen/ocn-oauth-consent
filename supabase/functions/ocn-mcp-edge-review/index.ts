@@ -192,7 +192,7 @@ export function createIsolatedReviewFetcher(verifier: OwnerVerifier) {
   return (request: Request) => dispatchReviewRequest(request, reviewMiddleware);
 }
 
-function dispatchReviewRequest(
+async function dispatchReviewRequest(
   request: Request, middleware: ReturnType<typeof createReviewMiddleware>,
 ): Promise<Response> {
   // Prevent forged public origin/issuer metadata in the review function.
