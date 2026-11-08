@@ -111,9 +111,11 @@ export async function authorizeOwnerRequest(
         claims.exp <= claims.iat || claims.exp - claims.iat > 3600 ||
         claims.exp <= nowSeconds - 30 || claims.iat > nowSeconds + 30 ||
         (claims.nbf !== undefined &&
-         (!Number.isSafeInteger(claims.nbf) || claims.nbf > nowSeconds + 30)) ||
-        typeof claims.scope !== "string" ||
-        !["openid", "email"].every(s => claims.scope!.split(/\s+/).includes(s))) return false;
+         (!Number.isSafeInteger(claims.nbf) || claims.nbf > nowSeconds + 30))) return false;
+    // Supabase OAuth access JWTs need not contain a "scope" claim.
+    // The trusted resource-scoped consent RPC MUST verify required grant scopes
+    // from auth.oauth_consents in the same owner/client/session transaction.
+    // Never infer scope permissions from decoded JWT/user metadata.
     return await verifier.sessionActive(claims.sub, claims.session_id, claims.client_id) === true;
   } catch {
     return false;
