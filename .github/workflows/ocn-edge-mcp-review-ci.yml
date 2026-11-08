@@ -41,3 +41,68 @@ jobs:
         run: deno check --frozen --lock=supabase/functions/ocn-mcp-edge-review/deno.lock supabase/functions/ocn-mcp-edge-review/index_test.ts supabase/functions/ocn-mcp-edge-review/trusted-verifier_test.ts
       - name: Isolated no-secrets MCP, OAuth and ES256 tests
         run: env -i PATH="$PATH" HOME="$HOME" NODE_ENV=test CI=true deno test --frozen --lock=supabase/functions/ocn-mcp-edge-review/deno.lock --cached-only --allow-env supabase/functions/ocn-mcp-edge-review/index_test.ts supabase/functions/ocn-mcp-edge-review/trusted-verifier_test.ts
+
+  # An explicitly one-shot GoTrue source-level integration job.
+  # Public GitHub-hosted runner + disposable Postgres; no Supabase project,
+  # owner token, secret, OAuth client, service_role or Windows execution.
+  # Runs only on the commit carrying the CI review marker below.
+  upstream-native-rfc8707:
+    if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(review): upstream Go OAuth resource') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: root
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 15
+    steps:
+      - name: Checkout exact public upstream RFC 8707 candidate with no persisted credentials
+        uses: actions/checkout@v4
+        with:
+          repository: melcheikh/auth
+          ref: e26fc1e25cb4411a23a8b0832ecfe1a6b2067e39
+          persist-credentials: false
+      - name: Verify immutable upstream source and migration collision preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "e26fc1e25cb4411a23a8b0832ecfe1a6b2067e39"
+          test -f internal/api/oauthserver/resource_indicator_test.go
+          test -f migrations/20261030120000_add_resource_to_sessions.up.sql
+          count="$(find migrations -maxdepth 1 -name '20261030120000_*.up.sql' | wc -l)"
+          if [ "$count" -ne 1 ]; then
+            echo "OCN_UPSTREAM_MIGRATION_COLLISION_BLOCKED: expected one unique version, found $count"
+            exit 2
+          fi
+          echo "OCN_UPSTREAM_SOURCE_PIN_AND_MIGRATION_UNIQUE_PASS"
+      - name: Install upstream declared Go toolchain
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Initialize only the disposable PostgreSQL service
+        shell: bash
+        run: |
+          set -euo pipefail
+          go version
+          psql -v ON_ERROR_STOP=1 -f hack/init_postgres.sql "postgresql://postgres:root@localhost:5432/postgres"
+          make migrate_dev
+          psql -v ON_ERROR_STOP=1 -At "postgresql://postgres:root@localhost:5432/postgres" \
+            -c "SELECT CASE WHEN EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='auth' AND table_name='sessions' AND column_name='resource') THEN 'OCN_UPSTREAM_SESSIONS_RESOURCE_MIGRATION_PASS' ELSE 'MISSING_SESSIONS_RESOURCE' END"
+      - name: Execute actual upstream OAuth code-grant and refresh HTTP handler tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -count=1 -p 1 -v -run '^(TestOAuthClientHandler|TestOAuthAuthorize)$/Test(ResourceIndicator_|Authorize_)' ./internal/api/oauthserver
+          echo "OCN_UPSTREAM_NATIVE_OAUTH_RESOURCE_TEST_PASS"
