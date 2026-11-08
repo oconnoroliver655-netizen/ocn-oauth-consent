@@ -48,6 +48,78 @@ Deno.test("out-of-scope routes and untrusted origins fail closed", async () => {
   const forged = await fetchReview(new Request("https://evil.invalid/functions/v1/ocn-mcp-edge-review"));
   check(forged.status === 404, "untrusted origin must be unavailable");
 });
+// Official Supabase middleware matches the metadata suffix at ANY depth.
+// The review entrypoint must fence routes before middleware and never expose
+// resource metadata at an unrelated path, even though metadata is public.
+Deno.test("OAuth metadata suffix is inaccessible outside the exact MCP resource path", async () => {
+  for (const suffix of [
+    "/secrets/oauth-protected-resource",
+    "/healthz/oauth-protected-resource",
+    "/oauth-protected-resource/oauth-protected-resource",
+  ]) {
+    for (const method of ["GET", "OPTIONS"]) {
+      const result = await fetchReview(new Request(origin + suffix, { method }));
+      check(result.status === 404, method + " unrelated metadata suffix was accepted: " + suffix);
+      check(!(await result.text()).includes("authorization_servers"),
+        "metadata leaked at an unexpected route");
+    }
+  }
+  for (const otherOrigin of [
+    "http://ouxniljtjxnrkwakkvbv.supabase.co/functions/v1/ocn-mcp-edge-review",
+    "https://ouxniljtjxnrkwakkvbv.supabase.co:444/functions/v1/ocn-mcp-edge-review",
+  ]) {
+    const result = await fetchReview(new Request(otherOrigin + "/oauth-protected-resource"));
+    check(result.status === 404, "unexpected alternate origin served OAuth metadata");
+  }
+  const wrongMethod = await fetchReview(
+    new Request(origin + "/oauth-protected-resource", { method: "POST" }));
+  check(wrongMethod.status === 404,
+    "non-GET/OPTIONS metadata request bypassed the exact endpoint router");
+});
+
+Deno.test("OAuth metadata remains canonical under untrusted request hints and CORS preflight", async () => {
+  const url = origin + "/oauth-protected-resource?resource=https%3A%2F%2Fevil.invalid";
+  const result = await fetchReview(new Request(url, {
+    headers: {
+      "x-forwarded-host": "evil.invalid",
+      "x-forwarded-proto": "http",
+      "authorization": "Bearer attacker-provided",
+    },
+  }));
+  check(result.status === 200, "valid metadata route unavailable");
+  const metadata = await result.json();
+  check(metadata.resource === resource &&
+    Array.isArray(metadata.authorization_servers) &&
+    metadata.authorization_servers.length === 1 &&
+    metadata.authorization_servers[0] === issuer,
+    "untrusted request hints altered the advertised resource or issuer");
+  const preflight = await fetchReview(new Request(origin + "/oauth-protected-resource", {
+    method: "OPTIONS",
+    headers: {
+      "origin": "https://client.example.invalid",
+      "access-control-request-method": "GET",
+    },
+  }));
+  check(preflight.ok, "official middleware did not honor metadata CORS preflight");
+  check(preflight.headers.has("access-control-allow-origin"),
+    "metadata preflight lacks expected permissive CORS");
+});
+
+Deno.test("tool-level OAuth challenge points to the exact discoverable resource metadata", async () => {
+  const result = await fetchReview(rpc("tools/call", {
+    name: "owner_binding_probe", arguments: {},
+  }, "Bearer attacker-provided"));
+  const body = await result.text();
+  check(body.includes("mcp/www_authenticate") && body.includes("resource_metadata") &&
+    body.includes(resource + "/oauth-protected-resource"),
+    "invalid private bearer did not advertise the canonical metadata URL");
+  check(body.includes("error_description") && body.includes("invalid_token"),
+    "tool-level challenge lacks actionable OAuth error and description");
+  check(!body.includes("owner_verified") && !body.includes("command_id") &&
+    !body.includes("service_role"),
+    "private challenge leaked owner identity or privileged implementation");
+});
+
 Deno.test("MCP discovery exposes only safe canaries; private canary declares OAuth", async () => {
   const res = await fetchReview(rpc("tools/list", {}));
   check(res.ok, "MCP tools/list failed: " + res.status);
