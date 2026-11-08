@@ -120,7 +120,7 @@ export async function authorizeOwnerRequest(
   }
 }
 
-function mcpHandler(request: Request) {
+function mcpHandler(request: Request, verifier?: OwnerVerifier) {
   return createMcpHandler(() => {
     const server = new McpServer({ name: "ocn-mcp-edge-review", version: "0.0.2" });
     server.registerTool("ping", {
@@ -140,7 +140,7 @@ function mcpHandler(request: Request) {
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["openid", "email"] }] },
       annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     }, async () => {
-      const allowed = await authorizeOwnerRequest(request.headers.get("authorization"));
+      const allowed = await authorizeOwnerRequest(request.headers.get("authorization"), verifier);
       if (!allowed) return {
         isError: true,
         content: [{ type: "text", text: "Owner OAuth verifier not connected in review build" }],
@@ -157,7 +157,8 @@ function mcpHandler(request: Request) {
 
 // Official path-aware OAuth resource metadata / WWW-Authenticate middleware.
 // It does NOT authorize a user by itself: the private tool remains fail-closed.
-const resourceMiddleware = pipeline(
+function createReviewMiddleware(verifier?: OwnerVerifier) {
+  return pipeline(
   [withOAuthProtectedResource({
     resourceServer: RESOURCE,
     authorizationServer: ISSUER,
@@ -176,16 +177,33 @@ const resourceMiddleware = pipeline(
         status: 404, headers: { "content-type": "application/json; charset=utf-8" },
       });
     }
-    return mcpHandler(req).fetch(req);
+    return mcpHandler(req, verifier).fetch(req);
   },
-);
+  );
+}
 
-export async function fetchReview(request: Request): Promise<Response> {
+const resourceMiddleware = createReviewMiddleware();
+
+// Explicit dependency injection for isolated integration tests ONLY. The
+// exported HTTP entrypoint below never supplies a verifier and stays deny-all.
+export function createIsolatedReviewFetcher(verifier: OwnerVerifier) {
+  if (!verifier) throw new Error("Review verifier required");
+  const reviewMiddleware = createReviewMiddleware(verifier);
+  return (request: Request) => dispatchReviewRequest(request, reviewMiddleware);
+}
+
+function dispatchReviewRequest(
+  request: Request, middleware: ReturnType<typeof createReviewMiddleware>,
+): Promise<Response> {
   // Prevent forged public origin/issuer metadata in the review function.
   if (new URL(request.url).origin !== ORIGIN) {
     return new Response("Not found", { status: 404 });
   }
-  return resourceMiddleware(request);
+  return middleware(request);
+}
+
+export async function fetchReview(request: Request): Promise<Response> {
+  return dispatchReviewRequest(request, resourceMiddleware);
 }
 
 export default { fetch: fetchReview };
