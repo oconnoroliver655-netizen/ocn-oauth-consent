@@ -37,6 +37,61 @@ export interface OwnerVerifier {
   verifyBearer: (token: string) => Promise<OwnerClaims | null>;
   sessionActive: (owner: string, session: string, client: string) => Promise<boolean>;
 }
+// Crypto-only verification primitive derived from the existing production
+// validator policy. The JWKS must be supplied by a trusted server-side source;
+// NEVER fetch jwks_uri/jwk/x5u/jku from an untrusted JWT header.
+// Returning claims does not authorize an operation: the separate owner/session
+// gate still binds issuer, resource, owner, client, expiry and revocation.
+export async function verifyEs256Jwt(
+  jwt: string,
+  trustedJwks: { keys: Array<JsonWebKey & { kid?: string; use?: string; alg?: string }> },
+): Promise<OwnerClaims | null> {
+  try {
+    if (typeof jwt !== "string" || jwt.length === 0 || jwt.length > 8192)
+      return null;
+    const parts = jwt.split(".");
+    if (parts.length !== 3) return null;
+    const decode = (part: string, maxBytes: number): Uint8Array => {
+      if (!part || part.length > maxBytes * 2 || !/^[A-Za-z0-9_-]+$/.test(part))
+        throw new Error("Invalid base64url");
+      const str = atob(part.replace(/-/g, "+").replace(/_/g, "/") +
+        "=".repeat((4 - part.length % 4) % 4));
+      if (str.length > maxBytes) throw new Error("Oversize JWT part");
+      return Uint8Array.from(str, char => char.charCodeAt(0));
+    };
+    const parse = (part: string, maxBytes: number): Record<string, unknown> => {
+      const value = JSON.parse(new TextDecoder("utf-8", { fatal: true })
+        .decode(decode(part, maxBytes)));
+      if (!value || typeof value !== "object" || Array.isArray(value))
+        throw new Error("Invalid JWT object");
+      return value;
+    };
+    const header = parse(parts[0], 2048);
+    const payload = parse(parts[1], 4096);
+    if (header.alg !== "ES256" || typeof header.kid !== "string" ||
+        !header.kid || header.kid.length > 128 ||
+        "jwk" in header || "jku" in header || "x5u" in header ||
+        "crit" in header) return null;
+    const signature = decode(parts[2], 128);
+    if (signature.length !== 64 || !trustedJwks ||
+        !Array.isArray(trustedJwks.keys)) return null;
+    const keys = trustedJwks.keys.filter(key =>
+      key && key.kid === header.kid && key.kty === "EC" &&
+      key.crv === "P-256" && (key.alg === undefined || key.alg === "ES256") &&
+      (key.use === undefined || key.use === "sig") && !("d" in key) &&
+      (!key.key_ops || key.key_ops.includes("verify")));
+    if (keys.length !== 1) return null;
+    const key = await crypto.subtle.importKey(
+      "jwk", keys[0], { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+    const signed = new TextEncoder().encode(parts[0] + "." + parts[1]);
+    if (!await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" },
+        key, signature, signed)) return null;
+    return payload as unknown as OwnerClaims;
+  } catch {
+    return null;
+  }
+}
+
 export async function authorizeOwnerRequest(
   header: string | null, verifier?: OwnerVerifier, nowSeconds = Math.floor(Date.now() / 1000)
 ): Promise<boolean> {
