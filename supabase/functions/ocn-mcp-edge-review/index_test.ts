@@ -103,11 +103,16 @@ Deno.test("strict verified claims require exact issuer/resource/owner/client and
     ["expired token", { exp: time - 45 }],
     ["future token", { iat: time + 90, exp: time + 120 }],
     ["too long token", { exp: time + 5000 }],
-    ["missing openid scope", { scope: "email" }],
   ] as Array<[string, Partial<OwnerClaims>]>) {
     check(!await authorizeOwnerRequest("Bearer signed-stub", verifier({ ...claims, ...change }), time),
       "accepted " + name);
   }
+  // Official Supabase OAuth access JWT examples omit the optional "scope"
+  // claim. Grant scopes are enforced inside the trusted consent database RPC.
+  const withoutJwtScope = { ...claims };
+  delete withoutJwtScope.scope;
+  check(await authorizeOwnerRequest("Bearer signed-stub", verifier(withoutJwtScope), time),
+    "scope-free signed issuer/client/resource token rejected before consent RPC");
   check(!await authorizeOwnerRequest("Bearer signed-stub", verifier(claims, false), time),
     "revoked/absent consent allowed");
 });
@@ -146,6 +151,11 @@ Deno.test("real ES256 signature verifies against trusted JWKS and exact owner bi
   };
   check(await authorizeOwnerRequest("Bearer " + token, signedVerifier, time),
     "cryptographically signed, consented token should pass review contract");
+  const withoutScope = { ...claims };
+  delete withoutScope.scope;
+  const signedWithoutScope = await signedJwt(privateKey, withoutScope);
+  check(await authorizeOwnerRequest("Bearer " + signedWithoutScope, signedVerifier, time),
+    "official-shaped ES256 OAuth access JWT without scope must use RPC consent");
   const noConsent = { ...signedVerifier, sessionActive: async () => false };
   check(!await authorizeOwnerRequest("Bearer " + token, noConsent, time),
     "signature must not bypass server-side revocation");
