@@ -1,6 +1,6 @@
 // REVIEW-ONLY trusted-network contract tests. No production secrets, tokens,
 // Windows tools, external network or database changes.
-import { authorizeOwnerRequest, createIsolatedReviewFetcher, fetchReview } from "./index.ts";
+import { authorizeOwnerRequest, createIsolatedReviewFetcher, fetchReview, verifyEs256Jwt } from "./index.ts";
 import { createReviewServerVerifier, REVIEW_ORIGIN, REVIEW_RESOURCE } from "./trusted-verifier.ts";
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -229,9 +229,14 @@ Deno.test("review HTTP MCP tool binds real ES256 proof and atomic consent; defau
 // This does NOT register a live Supabase client, use a real consent screen,
 // call the public token endpoint, or claim an authentic Supabase-issued JWT.
 // Checks the complete client-side protocol invariants before later live release.
+// In particular, this isolated authorization-server MODEL is NOT evidence that
+// Supabase Auth accepts/retains the RFC 8707 resource input in its actual code
+// grant or custom access token hook. Do not cut over on this test alone.
 Deno.test("isolated OAuth registration, S256 PKCE, consent, code replay and MCP revocation", async () => {
   const callback = "https://client.example.invalid/oauth/callback";
   const otherCallback = "https://other.example.invalid/callback";
+  const resource = REVIEW_RESOURCE;
+  const otherResource = "https://ocn-mcp-ping-canary.onrender.com";
   type Registration = { client_id: string; redirect_uris: string[]; token_endpoint_auth_method: string };
   const registrations = new Map<string, Registration>();
   function register(redirects: string[], method: string): Registration {
@@ -258,7 +263,8 @@ Deno.test("isolated OAuth registration, S256 PKCE, consent, code replay and MCP 
   const challenge = await digest(codeVerifier);
   const state = b64url(crypto.getRandomValues(new Uint8Array(24)));
   type CodeGrant = {
-    clientId: string; redirect: string; challenge: string; expires: number; used: boolean;
+    clientId: string; redirect: string; resource: string; challenge: string;
+    expires: number; used: boolean;
   };
   const grants = new Map<string, CodeGrant>();
   let sequence = 0;
@@ -266,7 +272,10 @@ Deno.test("isolated OAuth registration, S256 PKCE, consent, code replay and MCP 
   function authorize(params: URLSearchParams, approved: boolean): URL {
     const clientId = params.get("client_id") ?? "";
     const redirect = params.get("redirect_uri") ?? "";
+    const requestedResources = params.getAll("resource");
     const registered = registrations.get(clientId);
+    assert(requestedResources.length === 1 && requestedResources[0] === resource,
+      "OAuth grant must bind exactly one approved MCP resource");
     assert(registered?.redirect_uris.includes(redirect) === true,
       "client/redirect mismatch must be refused");
     assert(params.get("response_type") === "code" &&
@@ -282,7 +291,8 @@ Deno.test("isolated OAuth registration, S256 PKCE, consent, code replay and MCP 
     }
     const code = "isolated-only-code-" + ++sequence;
     grants.set(code, {
-      clientId, redirect, challenge: params.get("code_challenge")!,
+      clientId, redirect, resource: requestedResources[0],
+      challenge: params.get("code_challenge")!,
       expires: tick + 600, used: false,
     });
     response.searchParams.set("code", code);
@@ -292,7 +302,7 @@ Deno.test("isolated OAuth registration, S256 PKCE, consent, code replay and MCP 
     response_type: "code", client_id: app.client_id,
     redirect_uri: callback, state,
     code_challenge: challenge, code_challenge_method: "S256",
-    scope: "openid email",
+    scope: "openid email", resource,
   });
   const invalidRedirect = new URLSearchParams(params);
   invalidRedirect.set("redirect_uri", otherCallback);
@@ -305,6 +315,24 @@ Deno.test("isolated OAuth registration, S256 PKCE, consent, code replay and MCP 
   let plainDenied = false;
   try { authorize(plainPkce, true); } catch { plainDenied = true; }
   assert(plainDenied && grants.size === 0, "PKCE downgrade was accepted");
+
+  // OpenAI sends resource on BOTH endpoints. Reject absent, changed,
+  // duplicated, query-bearing, fragment and old-Render resource indicators.
+  for (const [label, values] of [
+    ["omitted", []],
+    ["old Render resource", [otherResource]],
+    ["trailing slash", [resource + "/"]],
+    ["resource fragment", [resource + "#fragment"]],
+    ["duplicate resource", [resource, otherResource]],
+  ] as Array<[string, string[]]>) {
+    const candidate = new URLSearchParams(params);
+    candidate.delete("resource");
+    for (const value of values) candidate.append("resource", value);
+    let denied = false;
+    try { authorize(candidate, true); } catch { denied = true; }
+    assert(denied && grants.size === 0,
+      "invalid authorization resource unexpectedly generated a grant: " + label);
+  }
 
   const refused = authorize(params, false);
   assert(refused.searchParams.get("error") === "access_denied" &&
@@ -319,25 +347,41 @@ Deno.test("isolated OAuth registration, S256 PKCE, consent, code replay and MCP 
     "OAuth client must reject a state mismatch instead of exchanging the code");
 
   async function exchange(code: string, id: string, redirect: string,
-                          verifierText: string, at: number) {
+                          verifierText: string, tokenResource: string, at: number) {
     const grant = grants.get(code);
     if (!grant || grant.used || grant.clientId !== id ||
-        grant.redirect !== redirect || grant.expires <= at ||
+        grant.redirect !== redirect || grant.resource !== tokenResource ||
+        tokenResource !== resource || grant.expires <= at ||
         await digest(verifierText) !== grant.challenge) return null;
     grant.used = true;
     const { scope: _consentNotJwt, ...tokenClaims } = payload;
-    return await signedFixture({ ...tokenClaims, iat: at - 60, exp: at + 300 });
+    // The grant resource determines the signed token audience; client_id
+    // alone is insufficient evidence of the original authorization request.
+    return await signedFixture({ ...tokenClaims, aud: grant.resource,
+      iat: at - 60, exp: at + 300 });
   }
   const code = approved.searchParams.get("code")!;
-  assert(await exchange(code, app.client_id, callback, codeVerifier + "-wrong", tick) === null,
+  assert(await exchange(code, app.client_id, callback, codeVerifier + "-wrong", resource, tick) === null,
     "wrong PKCE verifier exchanged code");
-  assert(await exchange(code, app.client_id, otherCallback, codeVerifier, tick) === null,
+  assert(await exchange(code, app.client_id, otherCallback, codeVerifier, resource, tick) === null,
     "wrong token exchange redirect succeeded");
-  assert(await exchange(code, owner, callback, codeVerifier, tick) === null,
+  assert(await exchange(code, owner, callback, codeVerifier, resource, tick) === null,
     "wrong client exchanged authorization code");
-  const issued = await exchange(code, app.client_id, callback, codeVerifier, tick);
+  for (const [label, mismatched] of [
+    ["missing resource at token endpoint", ""],
+    ["wrong resource at token endpoint", otherResource],
+    ["changed resource URL", resource + "/"],
+  ]) {
+    assert(await exchange(code, app.client_id, callback, codeVerifier,
+      mismatched, tick) === null && !grants.get(code)?.used,
+      "token endpoint accepted wrong resource or consumed a valid code: " + label);
+  }
+  const issued = await exchange(code, app.client_id, callback, codeVerifier, resource, tick);
   assert(issued?.token && issued.jwks, "correct PKCE exchange failed");
-  assert(await exchange(code, app.client_id, callback, codeVerifier, tick) === null,
+  const signedClaims = await verifyEs256Jwt(issued.token, issued.jwks);
+  assert(signedClaims?.aud === resource && signedClaims.client_id === app.client_id,
+    "code-bound requested resource and client missing from verified signed JWT");
+  assert(await exchange(code, app.client_id, callback, codeVerifier, resource, tick) === null,
     "single-use authorization code replay accepted");
 
   const header = "Bearer " + issued.token;
@@ -361,6 +405,6 @@ Deno.test("isolated OAuth registration, S256 PKCE, consent, code replay and MCP 
 
   const expiredUrl = authorize(params, true);
   const expiredCode = expiredUrl.searchParams.get("code")!;
-  assert(await exchange(expiredCode, app.client_id, callback, codeVerifier, tick + 601) === null,
+  assert(await exchange(expiredCode, app.client_id, callback, codeVerifier, resource, tick + 601) === null,
     "expired authorization code was exchanged");
 });
