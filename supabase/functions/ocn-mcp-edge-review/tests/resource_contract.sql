@@ -27,6 +27,61 @@ CREATE TABLE auth.oauth_consents (
   UNIQUE (user_id, client_id)
 );
 
+-- Production-shaped legacy singleton and RPC/hook, reproduced ONLY in CI.
+-- Live Supabase still has binding_id=1, UNIQUE text client_id, no v2 map.
+CREATE TABLE ocn_private.oauth_resource_binding (
+  binding_id smallint PRIMARY KEY CHECK (binding_id = 1),
+  client_id text NOT NULL UNIQUE CHECK (length(client_id) BETWEEN 1 AND 200),
+  resource_audience text NOT NULL CHECK (
+    length(resource_audience) BETWEEN 9 AND 250
+    AND resource_audience ~ '^https://[^/?#]+[^?#]*$'
+  ),
+  enabled boolean NOT NULL DEFAULT false
+);
+INSERT INTO ocn_private.oauth_resource_binding
+  (binding_id, client_id, resource_audience, enabled) VALUES
+  (1, 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+   'https://ocn-mcp-ping-canary.onrender.com', true);
+
+-- Exact material behavior of the existing three-argument production RPC.
+CREATE FUNCTION public.ocn_owner_oauth_session_active(
+  p_owner uuid, p_session uuid, p_client uuid
+) RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = ''
+AS $legacy$
+SELECT EXISTS (
+  SELECT 1 FROM auth.sessions s
+  JOIN auth.oauth_consents c ON c.user_id=s.user_id AND c.client_id=s.oauth_client_id
+  JOIN auth.oauth_clients app ON app.id=c.client_id
+  JOIN ocn_private.oauth_resource_binding b
+    ON b.binding_id=1 AND b.client_id=c.client_id::text
+  WHERE s.user_id=p_owner AND s.id=p_session AND s.oauth_client_id=p_client
+    AND app.deleted_at IS NULL AND c.revoked_at IS NULL
+    AND (s.not_after IS NULL OR s.not_after > now()) AND b.enabled IS TRUE
+);
+$legacy$;
+REVOKE ALL ON FUNCTION public.ocn_owner_oauth_session_active(uuid,uuid,uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.ocn_owner_oauth_session_active(uuid,uuid,uuid) FROM anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.ocn_owner_oauth_session_active(uuid,uuid,uuid) TO service_role;
+
+-- Production's current audience hook only changes the OLD pinned client's aud.
+CREATE FUNCTION ocn_private.set_ocn_access_token_audience(event jsonb)
+RETURNS jsonb LANGUAGE plpgsql SET search_path = ''
+AS $hook$
+DECLARE claims jsonb; pinned_client text; pinned_resource text;
+BEGIN
+  claims := event -> 'claims';
+  IF claims IS NULL OR pg_catalog.jsonb_typeof(claims) <> 'object'
+    THEN RAISE EXCEPTION 'Invalid claims'; END IF;
+  SELECT client_id,resource_audience INTO pinned_client,pinned_resource
+    FROM ocn_private.oauth_resource_binding WHERE binding_id=1 AND enabled IS TRUE;
+  IF pinned_client IS NOT NULL AND claims->>'client_id'=pinned_client
+    THEN claims := pg_catalog.jsonb_set(
+      claims,'{aud}',pg_catalog.to_jsonb(pinned_resource),true);
+  END IF;
+  RETURN pg_catalog.jsonb_build_object('claims',claims);
+END;
+$hook$;
+
 -- A V2 resource map that permits old and new resource entries to coexist.
 -- Current production oauth_resource_binding is intentionally a singleton
 -- (binding_id CHECK = 1, PK binding_id); DO NOT replace it in production.
@@ -39,6 +94,10 @@ CREATE TABLE ocn_private.oauth_resource_bindings_v2 (
   enabled boolean NOT NULL DEFAULT false,
   PRIMARY KEY (client_id, resource_audience)
 );
+-- OAuth JWT issuance derives audience from verified client_id alone.
+-- Permit multiple mapped resources per client over time, but only ONE enabled.
+CREATE UNIQUE INDEX oauth_review_one_enabled_resource_per_client
+  ON ocn_private.oauth_resource_bindings_v2(client_id) WHERE enabled;
 
 -- Proposed future RPC, in review CI ONLY. Definer needs access to auth tables.
 -- Name is intentionally different from existing production RPC.
@@ -84,6 +143,27 @@ INSERT INTO ocn_private.oauth_resource_bindings_v2(client_id,resource_audience,e
   ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','https://ocn-mcp-ping-canary.onrender.com',true),
   ('cccccccc-cccc-4ccc-8ccc-cccccccccccc','https://ouxniljtjxnrkwakkvbv.supabase.co/functions/v1/ocn-mcp-edge-review',true);
 
+-- REVIEW-ONLY candidate audience hook. This is NOT installed in live Auth.
+-- Simulates a future controlled hook migration while preserving the old singleton.
+CREATE FUNCTION ocn_private.set_ocn_access_token_audience_review_v2(event jsonb)
+RETURNS jsonb LANGUAGE plpgsql SET search_path = ''
+AS $hook2$
+DECLARE claims jsonb; mapped_resource text;
+BEGIN
+  claims := event -> 'claims';
+  IF claims IS NULL OR pg_catalog.jsonb_typeof(claims) <> 'object'
+    THEN RAISE EXCEPTION 'Invalid claims'; END IF;
+  SELECT resource_audience INTO mapped_resource
+    FROM ocn_private.oauth_resource_bindings_v2
+   WHERE client_id::text = claims->>'client_id' AND enabled IS TRUE;
+  IF mapped_resource IS NOT NULL
+    THEN claims := pg_catalog.jsonb_set(
+      claims,'{aud}',pg_catalog.to_jsonb(mapped_resource),true);
+  END IF;
+  RETURN pg_catalog.jsonb_build_object('claims',claims);
+END;
+$hook2$;
+
 -- Exercise the same SQL function that a future trusted server-side endpoint would use.
 DO $test$
 DECLARE
@@ -94,7 +174,55 @@ DECLARE
   edge_session uuid := 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
   old_resource text := 'https://ocn-mcp-ping-canary.onrender.com';
   edge_resource text := 'https://ouxniljtjxnrkwakkvbv.supabase.co/functions/v1/ocn-mcp-edge-review';
+  old_claims jsonb;
+  edge_claims jsonb;
+  new_claims jsonb;
 BEGIN
+  -- The original single-resource function/hook MUST remain unchanged by
+  -- creating a parallel v2 table. No Edge privilege from old OAuth logic.
+  IF NOT public.ocn_owner_oauth_session_active(owner_id, old_session, old_client)
+    THEN RAISE EXCEPTION 'legacy RPC lost old client after v2 table added'; END IF;
+  IF public.ocn_owner_oauth_session_active(owner_id, edge_session, edge_client)
+    THEN RAISE EXCEPTION 'legacy RPC accepted new Edge client'; END IF;
+
+  SELECT ocn_private.set_ocn_access_token_audience(
+    jsonb_build_object('claims',jsonb_build_object('client_id',old_client::text,'aud','authenticated'))
+  ) INTO old_claims;
+  IF old_claims->'claims'->>'aud' <> old_resource
+    THEN RAISE EXCEPTION 'production-shaped audience hook lost Render mapping'; END IF;
+  SELECT ocn_private.set_ocn_access_token_audience(
+    jsonb_build_object('claims',jsonb_build_object('client_id',edge_client::text,'aud','authenticated'))
+  ) INTO edge_claims;
+  IF edge_claims->'claims'->>'aud' <> 'authenticated'
+    THEN RAISE EXCEPTION 'old hook silently authorized Edge audience'; END IF;
+
+  -- The proposed hook (NOT deployed) binds both clients to separate audiences.
+  SELECT ocn_private.set_ocn_access_token_audience_review_v2(
+    jsonb_build_object('claims',jsonb_build_object('client_id',old_client::text,'aud','authenticated'))
+  ) INTO new_claims;
+  IF new_claims->'claims'->>'aud' <> old_resource
+    THEN RAISE EXCEPTION 'candidate hook changed old Render audience'; END IF;
+  SELECT ocn_private.set_ocn_access_token_audience_review_v2(
+    jsonb_build_object('claims',jsonb_build_object('client_id',edge_client::text,'aud','authenticated'))
+  ) INTO new_claims;
+  IF new_claims->'claims'->>'aud' <> edge_resource
+    THEN RAISE EXCEPTION 'candidate hook failed Edge audience mapping'; END IF;
+  SELECT ocn_private.set_ocn_access_token_audience_review_v2(
+    jsonb_build_object('claims',jsonb_build_object(
+      'client_id','ffffffff-ffff-4fff-8fff-ffffffffffff','aud','authenticated'))
+  ) INTO new_claims;
+  IF new_claims->'claims'->>'aud' <> 'authenticated'
+    THEN RAISE EXCEPTION 'unknown client unexpectedly received resource audience'; END IF;
+
+  -- A second active resource for the same client MUST be rejected rather
+  -- than creating nondeterministic JWT aud issuance. Failed substatement rolls back.
+  BEGIN
+    INSERT INTO ocn_private.oauth_resource_bindings_v2(client_id,resource_audience,enabled)
+      VALUES(old_client,'https://second.invalid',true);
+    RAISE EXCEPTION 'missing active-client uniqueness fence';
+  EXCEPTION WHEN unique_violation THEN NULL;
+  END;
+
   IF NOT public.ocn_owner_oauth_resource_session_active(owner_id, edge_session, edge_client, edge_resource)
     THEN RAISE EXCEPTION 'valid Edge session unexpectedly denied'; END IF;
   IF NOT public.ocn_owner_oauth_resource_session_active(owner_id, old_session, old_client, old_resource)
@@ -136,6 +264,6 @@ BEGIN
     OR has_function_privilege('authenticated','public.ocn_owner_oauth_resource_session_active(uuid,uuid,uuid,text)','EXECUTE')
     OR NOT has_function_privilege('service_role','public.ocn_owner_oauth_resource_session_active(uuid,uuid,uuid,text)','EXECUTE')
     THEN RAISE EXCEPTION 'unsafe RPC EXECUTE grant'; END IF;
-  RAISE NOTICE 'OCN_RESOURCE_CONTRACT_PASS: dual resource, exact binding, owner/client/session, revoked/expired/disabled/deleted, role grants';
+  RAISE NOTICE 'OCN_RESOURCE_CONTRACT_PASS: legacy hook/RPC preserved, v2 audience hook preview, active-client uniqueness, dual resource, owner/client/session, revocation, role grants';
 END $test$;
 ROLLBACK; -- Entire fixture disappears at end. Never mutate remote Supabase.
