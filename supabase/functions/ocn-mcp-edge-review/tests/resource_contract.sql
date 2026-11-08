@@ -24,6 +24,7 @@ CREATE TABLE auth.oauth_consents (
   user_id uuid NOT NULL,
   client_id uuid NOT NULL,
   revoked_at timestamptz,
+  scopes text NOT NULL,
   UNIQUE (user_id, client_id)
 );
 
@@ -121,6 +122,10 @@ SELECT EXISTS (
     AND s.oauth_client_id = p_client
     AND app.deleted_at IS NULL
     AND c.revoked_at IS NULL
+    -- OAuth access JWTs do not promise a scope claim. Enforce the specific
+    -- private-tool scopes using the trusted, server-side consent record.
+    AND pg_catalog.regexp_split_to_array(pg_catalog.btrim(c.scopes),
+      '[[:space:]]+') @> ARRAY['openid', 'email']::text[]
     AND (s.not_after IS NULL OR s.not_after > now())
     AND p_resource IS NOT NULL
     AND length(p_resource) BETWEEN 9 AND 250
@@ -136,9 +141,9 @@ INSERT INTO auth.oauth_clients(id) VALUES
 INSERT INTO auth.sessions(id,user_id,oauth_client_id,not_after) VALUES
   ('dddddddd-dddd-4ddd-8ddd-dddddddddddd','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',now()+interval '1 hour'),
   ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','cccccccc-cccc-4ccc-8ccc-cccccccccccc',now()+interval '1 hour');
-INSERT INTO auth.oauth_consents(id,user_id,client_id) VALUES
-  ('11111111-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'),
-  ('22222222-2222-4222-8222-222222222222','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','cccccccc-cccc-4ccc-8ccc-cccccccccccc');
+INSERT INTO auth.oauth_consents(id,user_id,client_id,scopes) VALUES
+  ('11111111-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','openid email'),
+  ('22222222-2222-4222-8222-222222222222','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','cccccccc-cccc-4ccc-8ccc-cccccccccccc','openid email');
 INSERT INTO ocn_private.oauth_resource_bindings_v2(client_id,resource_audience,enabled) VALUES
   ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','https://ocn-mcp-ping-canary.onrender.com',true),
   ('cccccccc-cccc-4ccc-8ccc-cccccccccccc','https://ouxniljtjxnrkwakkvbv.supabase.co/functions/v1/ocn-mcp-edge-review',true);
@@ -244,6 +249,19 @@ BEGIN
   IF public.ocn_owner_oauth_resource_session_active(owner_id, edge_session, edge_client, edge_resource)
     THEN RAISE EXCEPTION 'disabled Edge binding accepted'; END IF;
   UPDATE ocn_private.oauth_resource_bindings_v2 SET enabled=true WHERE client_id=edge_client;
+
+  -- Grant scopes are checked from authoritative consent rows, not from
+  -- an optional JWT "scope" claim. Match full scope tokens, not substrings.
+  UPDATE auth.oauth_consents SET scopes='email' WHERE client_id=edge_client;
+  IF public.ocn_owner_oauth_resource_session_active(owner_id, edge_session, edge_client, edge_resource)
+    THEN RAISE EXCEPTION 'consent without openid scope accepted'; END IF;
+  UPDATE auth.oauth_consents SET scopes='openid email-other' WHERE client_id=edge_client;
+  IF public.ocn_owner_oauth_resource_session_active(owner_id, edge_session, edge_client, edge_resource)
+    THEN RAISE EXCEPTION 'substring email scope accepted'; END IF;
+  UPDATE auth.oauth_consents SET scopes='email  openid' WHERE client_id=edge_client;
+  IF NOT public.ocn_owner_oauth_resource_session_active(owner_id, edge_session, edge_client, edge_resource)
+    THEN RAISE EXCEPTION 'valid whitespace-separated scopes unexpectedly denied'; END IF;
+  UPDATE auth.oauth_consents SET scopes='openid email' WHERE client_id=edge_client;
 
   UPDATE auth.oauth_consents SET revoked_at=now() WHERE client_id=edge_client;
   IF public.ocn_owner_oauth_resource_session_active(owner_id, edge_session, edge_client, edge_resource)
