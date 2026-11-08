@@ -1,0 +1,82 @@
+name: OCN Render independent long HTTP diagnostic 20261108
+on:
+  push:
+    branches: [diagnostic/ocn-render-health-20261108]
+    paths: [.github/workflows/ocn-render-health-diagnostic-20261108.yml]
+permissions:
+  contents: read
+concurrency:
+  group: ocn-render-health-diagnostic-20261108
+  cancel-in-progress: false
+jobs:
+  read-only-external-http:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Bounded public HTTP measurements (no tokens, writes, or deployment)
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, subprocess, tempfile, time
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          def utc():
+              return datetime.now(timezone.utc).isoformat()
+
+          def probe(name, url, limit, method="GET", payload=None):
+              with tempfile.TemporaryDirectory(prefix="ocn-http-probe-") as temp:
+                  headers = str(Path(temp) / "headers")
+                  body = str(Path(temp) / "body")
+                  metrics = (
+                      "http_code=%{http_code};remote_ip=%{remote_ip};"
+                      "dns_s=%{time_namelookup};tcp_s=%{time_connect};"
+                      "tls_s=%{time_appconnect};ttfb_s=%{time_starttransfer};"
+                      "total_s=%{time_total};redirects=%{num_redirects}"
+                  )
+                  cmd = ["curl", "--silent", "--show-error", "--location",
+                         "--max-redirs", "2", "--retry", "0",
+                         "--connect-timeout", str(limit), "--max-time", str(limit),
+                         "--dump-header", headers, "--output", body,
+                         "--write-out", metrics]
+                  if method == "POST":
+                      cmd += ["--request", "POST", "--header", "content-type: application/json",
+                              "--header", "accept: application/json, text/event-stream",
+                              "--data-raw", payload]
+                  cmd.append(url)
+                  start = utc()
+                  monotonic = time.monotonic()
+                  try:
+                      result = subprocess.run(cmd, capture_output=True, text=True,
+                                              timeout=limit + 10, check=False)
+                      rc, stdout, stderr = result.returncode, result.stdout, result.stderr
+                  except subprocess.TimeoutExpired:
+                      rc, stdout, stderr = 124, "", "subprocess exceeded curl wall timeout"
+                  duration = round(time.monotonic() - monotonic, 3)
+                  permitted_headers = ("rndr-id", "x-render-request-id", "x-request-id", "cf-ray", "server", "date")
+                  safe_headers = []
+                  if Path(headers).exists():
+                      for line in Path(headers).read_text(errors="replace").splitlines():
+                          if ":" in line:
+                              key, value = line.split(":", 1)
+                              if key.strip().lower() in permitted_headers:
+                                  safe_headers.append((key.strip().lower(), value.strip()[:120]))
+                  response_excerpt = ""
+                  if name in ("healthz", "mcp_ping") and Path(body).exists():
+                      response_excerpt = Path(body).read_text(errors="replace")[:500]
+                  print("OCN_DIAGNOSTIC " + json.dumps({
+                      "name": name, "started_utc": start, "ended_utc": utc(),
+                      "wall_seconds": duration, "curl_exit": rc,
+                      "curl_metrics": stdout[:800], "error": stderr[:650],
+                      "allowlisted_response_headers": safe_headers[-12:],
+                      "body_excerpt": response_excerpt
+                  }, ensure_ascii=False), flush=True)
+
+          # Controls verify this runner's DNS and outbound HTTPS independently.
+          probe("github_control", "https://github.com/robots.txt", 15)
+          probe("render_control", "https://render.com/robots.txt", 20)
+          # This is ONE uninterrupted curl process with a 115-second wall budget.
+          probe("healthz", "https://ocn-mcp-ping-canary.onrender.com/healthz", 115)
+          probe("mcp_ping", "https://ocn-mcp-ping-canary.onrender.com/mcp", 35,
+                "POST", '{"jsonrpc":"2.0","id":"ocn-probe-20261108","method":"tools/call","params":{"name":"ping","arguments":{}}}')
+          PY
