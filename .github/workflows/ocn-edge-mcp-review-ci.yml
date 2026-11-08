@@ -21,5 +21,19 @@ jobs:
           deno-version: v2.x
       - name: Static type and dependency check (review branch only)
         run: deno check --no-lock supabase/functions/ocn-mcp-edge-review/index.ts
+      - name: Generate transitive lockfile for review (no publish or write permissions)
+        shell: bash
+        run: |
+          deno check --frozen=false --lock=supabase/functions/ocn-mcp-edge-review/deno.lock supabase/functions/ocn-mcp-edge-review/index_test.ts
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          f = Path("supabase/functions/ocn-mcp-edge-review/deno.lock")
+          body = f.read_text(encoding="utf-8")
+          print("OCN_LOCK_SIZE", len(body))
+          print("OCN_LOCK_SHA256", hashlib.sha256(body.encode()).hexdigest())
+          for i, start in enumerate(range(0, len(body), 320)):
+              print("OCN_LOCK_CHUNK", i, json.dumps(body[start:start+320]))
+          PY
       - name: Isolated no-secrets MCP HTTP protocol tests
         run: env -i PATH="$PATH" HOME="$HOME" NODE_ENV=test CI=true deno test --no-lock --cached-only --allow-env supabase/functions/ocn-mcp-edge-review/index_test.ts
