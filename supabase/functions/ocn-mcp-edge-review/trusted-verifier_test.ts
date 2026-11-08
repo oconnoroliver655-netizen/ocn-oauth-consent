@@ -1,6 +1,6 @@
 // REVIEW-ONLY trusted-network contract tests. No production secrets, tokens,
 // Windows tools, external network or database changes.
-import { authorizeOwnerRequest } from "./index.ts";
+import { authorizeOwnerRequest, createIsolatedReviewFetcher, fetchReview } from "./index.ts";
 import { createReviewServerVerifier, REVIEW_ORIGIN, REVIEW_RESOURCE } from "./trusted-verifier.ts";
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -165,4 +165,58 @@ Deno.test("bad server owner/client or missing service key are refused", () => {
     }
     assert(failed, "bad review server configuration unexpectedly accepted");
   }
+});
+
+ 
+// Full MCP HTTP-path integration with a verifier injected in test memory ONLY.
+// The exported deployable fetchReview() must deny the same valid signed token.
+function ownerCall(bearer?: string): Request {
+  return new Request(REVIEW_RESOURCE, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "accept": "application/json, text/event-stream",
+      ...(bearer ? { authorization: bearer } : {}),
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0", id: 811, method: "tools/call",
+      params: { name: "owner_binding_probe", arguments: {} },
+    }),
+  });
+}
+Deno.test("review HTTP MCP tool binds real ES256 proof and atomic consent; default entrypoint denies", async () => {
+  const fixture = await signedFixture();
+  const header = "Bearer " + fixture.token;
+  const baseline = await fetchReview(ownerCall(header));
+  const deniedBaseline = await baseline.text();
+  assert(deniedBaseline.includes("mcp/www_authenticate") &&
+    !deniedBaseline.includes("owner_verified\\\":true"),
+    "deployment export unexpectedly allowed the test token");
+
+  const acceptedNetwork = fakeNetwork(fixture.jwks);
+  const review = createIsolatedReviewFetcher(verifier(acceptedNetwork.fetchImpl));
+  const good = await review(ownerCall(header));
+  assert(good.status === 200, "MCP tool transport must succeed");
+  const body = await good.text();
+  assert(body.includes("owner_verified\\\":true") && body.includes("review_only\\\":true"),
+    "properly signed and resource-consented MCP owner canary rejected");
+  assert(acceptedNetwork.calls.length === 2,
+    "MCP owner canary must consult fixed JWKS and resource-aware RPC");
+  assert(!body.includes(fakeKey) && !body.includes("command_id"),
+    "secret or Windows command leaked into authenticated review response");
+
+  const absent = await review(ownerCall());
+  const absentBody = await absent.text();
+  assert(absentBody.includes("mcp/www_authenticate") &&
+    !absentBody.includes("owner_verified\\\":true"),
+    "missing bearer must be denied by the real MCP tool path");
+  assert(acceptedNetwork.calls.length === 2, "missing token should never make an outbound auth request");
+
+  const revokedNetwork = fakeNetwork(fixture.jwks, { admitted: false });
+  const revoked = await createIsolatedReviewFetcher(verifier(revokedNetwork.fetchImpl))(ownerCall(header));
+  const revokedBody = await revoked.text();
+  assert(revokedBody.includes("mcp/www_authenticate") &&
+    !revokedBody.includes("owner_verified\\\":true"),
+    "revoked consent unexpectedly authorized through the MCP tool");
+  assert(revokedNetwork.calls.length === 2, "revocation must reach atomic RPC");
 });
