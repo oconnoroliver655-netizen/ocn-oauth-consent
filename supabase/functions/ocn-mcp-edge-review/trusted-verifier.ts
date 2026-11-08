@@ -1,19 +1,19 @@
 /**
  * ISOLATED REVIEW CONTRACT ONLY — not imported by the deployed MCP handler.
  * Public Supabase JWKS read + owner/session consent RPC, with an additional
- * mandatory NEW resource-binding check. No device tools, tokens or secrets.
+ * atomic resource-scoped session/consent RPC. No device tools or real tokens.
  *
- * The current production ocn_owner_oauth_session_active RPC has a binding
- * for the OLD Render audience. It cannot on its own prove an Edge audience
- * is authorized. Do not wire this adapter until a trusted server-side exact
- * resource-binding check exists and passes.
+ * The current production ocn_owner_oauth_session_active RPC is NOT resource-aware
+ * and cannot prove Edge authorization. This review requires a NEW atomic RPC
+ * that takes p_resource and validates it in the SAME database transaction as
+ * session, client, owner and consent checks. The RPC is NOT deployed.
  */
 import { verifyEs256Jwt, type OwnerVerifier } from "./index.ts";
 
 export const REVIEW_ORIGIN = "https://ouxniljtjxnrkwakkvbv.supabase.co";
 export const REVIEW_RESOURCE = REVIEW_ORIGIN + "/functions/v1/ocn-mcp-edge-review";
 const JWKS_URL = REVIEW_ORIGIN + "/auth/v1/.well-known/jwks.json";
-const CONSENT_URL = REVIEW_ORIGIN + "/rest/v1/rpc/ocn_owner_oauth_session_active";
+const CONSENT_URL = REVIEW_ORIGIN + "/rest/v1/rpc/ocn_owner_oauth_resource_session_active";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 type ReadOnlyFetch = typeof fetch;
 
@@ -22,8 +22,6 @@ export interface ReviewServerDependencies {
   expectedClient: string;
   /** Inject on the server ONLY; never embed this value in logs or client JS. */
   serviceRoleKey: string;
-  /** Must attest exact REVIEW_RESOURCE, not just existence of old Render consent. */
-  resourceBindingActive: (audience: string) => Promise<boolean>;
   fetchImpl: ReadOnlyFetch;
 }
 
@@ -67,7 +65,7 @@ async function boundedJson(response: Response, maxBytes: number): Promise<unknow
 export function createReviewServerVerifier(config: ReviewServerDependencies): OwnerVerifier {
   if (!UUID.test(config.expectedOwner) || !UUID.test(config.expectedClient) ||
       !config.serviceRoleKey || config.serviceRoleKey.length < 10 ||
-      !config.fetchImpl || !config.resourceBindingActive) {
+      !config.fetchImpl) {
     throw new Error("Invalid review server-side dependencies");
   }
   return {
@@ -96,8 +94,6 @@ export function createReviewServerVerifier(config: ReviewServerDependencies): Ow
       if (who !== config.expectedOwner || client !== config.expectedClient ||
           !UUID.test(session)) return false;
       try {
-        // Required: current production RPC still checks the OLD binding.
-        if ((await config.resourceBindingActive(REVIEW_RESOURCE)) !== true) return false;
         const result = await config.fetchImpl(CONSENT_URL, {
           method: "POST",
           headers: {
@@ -107,6 +103,7 @@ export function createReviewServerVerifier(config: ReviewServerDependencies): Ow
           },
           body: JSON.stringify({
             p_owner: who, p_session: session, p_client: client,
+            p_resource: REVIEW_RESOURCE,
           }),
           redirect: "error",
           cache: "no-store",
