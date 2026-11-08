@@ -21,7 +21,7 @@ const BEARER_CHALLENGE =
 // JWT payload as verified. Only verifyBearer may supply authenticated claims.
 export interface OwnerClaims {
   iss: string;
-  aud: string;
+  aud: string | string[];
   sub: string;
   client_id: string;
   role: string;
@@ -94,6 +94,17 @@ export async function verifyEs256Jwt(
   }
 }
 
+// Supabase's upstream RFC 8707 proposal (#2894, not merged as of review)
+// emits aud: ["authenticated", resource] to preserve Data API behavior.
+// A legacy/custom-hook JWT may contain just the exact MCP resource string.
+// Do not accept other resources, duplicate values or a bare "authenticated"
+// audience. This is a compatibility contract, not a live-issuer certification.
+function boundToSingleReviewResource(aud: OwnerClaims["aud"]): boolean {
+  if (typeof aud === "string") return aud === RESOURCE;
+  if (!Array.isArray(aud) || aud.length !== 2) return false;
+  return aud[0] === "authenticated" && aud[1] === RESOURCE;
+}
+
 export async function authorizeOwnerRequest(
   header: string | null, verifier?: OwnerVerifier, nowSeconds = Math.floor(Date.now() / 1000)
 ): Promise<boolean> {
@@ -103,7 +114,7 @@ export async function authorizeOwnerRequest(
     return false;
   try {
     const claims = await verifier.verifyBearer(header.slice(7));
-    if (!claims || claims.iss !== ISSUER || claims.aud !== RESOURCE ||
+    if (!claims || claims.iss !== ISSUER || !boundToSingleReviewResource(claims.aud) ||
         claims.sub !== verifier.expectedOwner ||
         claims.client_id !== verifier.expectedClient || claims.role !== "authenticated" ||
         typeof claims.session_id !== "string" || !SESSION.test(claims.session_id) ||
