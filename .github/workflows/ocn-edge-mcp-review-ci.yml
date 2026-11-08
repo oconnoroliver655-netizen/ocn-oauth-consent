@@ -20,6 +20,6 @@ jobs:
         with:
           deno-version: v2.x
       - name: Frozen dependency and TypeScript check (review-only)
-        run: deno check --frozen --lock=supabase/functions/ocn-mcp-edge-review/deno.lock supabase/functions/ocn-mcp-edge-review/index_test.ts
+        run: deno check --frozen --lock=supabase/functions/ocn-mcp-edge-review/deno.lock supabase/functions/ocn-mcp-edge-review/index_test.ts supabase/functions/ocn-mcp-edge-review/trusted-verifier_test.ts
       - name: Isolated no-secrets MCP, OAuth and ES256 tests
-        run: env -i PATH="$PATH" HOME="$HOME" NODE_ENV=test CI=true deno test --frozen --lock=supabase/functions/ocn-mcp-edge-review/deno.lock --cached-only --allow-env supabase/functions/ocn-mcp-edge-review/index_test.ts
+        run: env -i PATH="$PATH" HOME="$HOME" NODE_ENV=test CI=true deno test --frozen --lock=supabase/functions/ocn-mcp-edge-review/deno.lock --cached-only --allow-env supabase/functions/ocn-mcp-edge-review/index_test.ts supabase/functions/ocn-mcp-edge-review/trusted-verifier_test.ts
