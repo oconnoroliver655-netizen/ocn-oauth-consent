@@ -187,7 +187,9 @@ function ownerCall(bearer?: string): Request {
 Deno.test("review HTTP MCP tool binds real ES256 proof and atomic consent; default entrypoint denies", async () => {
   // The HTTP tool uses real wall-clock time, unlike earlier pure-contract tests.
   const current = Math.floor(Date.now() / 1000);
-  const fixture = await signedFixture({ ...payload, iat: current - 60, exp: current + 300 });
+  // OAuth access tokens may omit scope; consent scope is validated by the RPC.
+  const { scope: _consentNotJwt, ...tokenClaims } = payload;
+  const fixture = await signedFixture({ ...tokenClaims, iat: current - 60, exp: current + 300 });
   const header = "Bearer " + fixture.token;
   const baseline = await fetchReview(ownerCall(header));
   const deniedBaseline = await baseline.text();
@@ -323,7 +325,8 @@ Deno.test("isolated OAuth registration, S256 PKCE, consent, code replay and MCP 
         grant.redirect !== redirect || grant.expires <= at ||
         await digest(verifierText) !== grant.challenge) return null;
     grant.used = true;
-    return await signedFixture({ ...payload, iat: at - 60, exp: at + 300 });
+    const { scope: _consentNotJwt, ...tokenClaims } = payload;
+    return await signedFixture({ ...tokenClaims, iat: at - 60, exp: at + 300 });
   }
   const code = approved.searchParams.get("code")!;
   assert(await exchange(code, app.client_id, callback, codeVerifier + "-wrong", tick) === null,
