@@ -22,4 +22,4 @@ jobs:
       - name: Static type and dependency check (review branch only)
         run: deno check --no-lock supabase/functions/ocn-mcp-edge-review/index.ts
       - name: Isolated no-secrets MCP HTTP protocol tests
-        run: deno test --no-lock --allow-env=NODE_ENV --allow-net supabase/functions/ocn-mcp-edge-review/index_test.ts
+        run: env -i PATH="$PATH" HOME="$HOME" NODE_ENV=test CI=true deno test --no-lock --cached-only --allow-env supabase/functions/ocn-mcp-edge-review/index_test.ts
