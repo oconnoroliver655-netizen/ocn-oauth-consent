@@ -185,7 +185,9 @@ function ownerCall(bearer?: string): Request {
   });
 }
 Deno.test("review HTTP MCP tool binds real ES256 proof and atomic consent; default entrypoint denies", async () => {
-  const fixture = await signedFixture();
+  // The HTTP tool uses real wall-clock time, unlike earlier pure-contract tests.
+  const current = Math.floor(Date.now() / 1000);
+  const fixture = await signedFixture({ ...payload, iat: current - 60, exp: current + 300 });
   const header = "Bearer " + fixture.token;
   const baseline = await fetchReview(ownerCall(header));
   const deniedBaseline = await baseline.text();
