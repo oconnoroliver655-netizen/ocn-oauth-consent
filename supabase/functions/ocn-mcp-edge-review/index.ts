@@ -84,8 +84,10 @@ export async function verifyEs256Jwt(
     const key = await crypto.subtle.importKey(
       "jwk", keys[0], { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
     const signed = new TextEncoder().encode(parts[0] + "." + parts[1]);
+    const signatureBuffer = new ArrayBuffer(signature.byteLength);
+    new Uint8Array(signatureBuffer).set(signature);
     if (!await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" },
-        key, signature, signed)) return null;
+        key, signatureBuffer, signed)) return null;
     return payload as unknown as OwnerClaims;
   } catch {
     return null;
