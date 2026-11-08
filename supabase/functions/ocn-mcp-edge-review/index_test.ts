@@ -117,7 +117,7 @@ Deno.test("strict verified claims require exact issuer/resource/owner/client and
 // inside this isolated test; no project key, bearer or private secret is used.
 const base64url = (bytes: Uint8Array): string =>
   btoa(Array.from(bytes, b => String.fromCharCode(b)).join(""))
-    .replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/g, "");
+    .replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/g, "");
 const segment = (value: object) => base64url(new TextEncoder().encode(JSON.stringify(value)));
 async function keyFixture() {
   const pair = await crypto.subtle.generateKey(
