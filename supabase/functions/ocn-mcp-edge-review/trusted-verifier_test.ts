@@ -1,155 +1,168 @@
-// Review-only WebCrypto and trusted fetch mocks. No real bearer, service key,
-// outbound network, Supabase SQL, Windows tool, or production deployment.
+// REVIEW-ONLY trusted-network contract tests. No production secrets, tokens,
+// Windows tools, external network or database changes.
 import { authorizeOwnerRequest } from "./index.ts";
 import { createReviewServerVerifier, REVIEW_ORIGIN, REVIEW_RESOURCE } from "./trusted-verifier.ts";
-function check(value: unknown, explanation: string): asserts value {
-  if (!value) throw new Error(explanation);
+function assert(value: unknown, message: string): asserts value {
+  if (!value) throw new Error(message);
 }
 const owner = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const client = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-const session = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const client = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const session = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const now = 1800000000;
-const claims = {
+const payload = {
   iss: REVIEW_ORIGIN + "/auth/v1", aud: REVIEW_RESOURCE,
   sub: owner, client_id: client, role: "authenticated",
-  session_id: session, iat: now - 60, exp: now + 300,
-  scope: "openid email",
+  session_id: session, iat: now - 60, exp: now + 300, scope: "openid email",
 };
-const fakeServiceKey = "local-unit-test-key-never-used-in-production";
+const fakeKey = "fixture-only-service-role-key-not-production";
 const b64url = (bytes: Uint8Array) =>
-  btoa(Array.from(bytes, c => String.fromCharCode(c)).join(""))
+  btoa(Array.from(bytes, x => String.fromCharCode(x)).join(""))
     .replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/g, "");
-const jsonPart = (obj: object) => b64url(new TextEncoder().encode(JSON.stringify(obj)));
-async function signedFixture(payload: object = claims) {
-  const keys = await crypto.subtle.generateKey(
+const segment = (obj: object) => b64url(new TextEncoder().encode(JSON.stringify(obj)));
+async function signedFixture(claims: object = payload) {
+  const pair = await crypto.subtle.generateKey(
     { name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
-  const publicJwk = await crypto.subtle.exportKey("jwk", keys.publicKey);
-  const signed = jsonPart({ alg: "ES256", kid: "fixture-1" }) + "." + jsonPart(payload);
-  const signature = new Uint8Array(await crypto.subtle.sign(
-    { name: "ECDSA", hash: "SHA-256" }, keys.privateKey, new TextEncoder().encode(signed)));
-  return {
-    token: signed + "." + b64url(signature),
-    jwks: { keys: [{ ...publicJwk, kid: "fixture-1" }] },
-  };
+  const pub = await crypto.subtle.exportKey("jwk", pair.publicKey);
+  const toSign = segment({ alg: "ES256", kid: "fixture-key" }) + "." + segment(claims);
+  const sig = new Uint8Array(await crypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" }, pair.privateKey,
+    new TextEncoder().encode(toSign)));
+  return { token: toSign + "." + b64url(sig), jwks: { keys: [{ ...pub, kid: "fixture-key" }] } };
 }
-function stubFetch(jwks: unknown, options?: {
-  consent?: boolean; jwksStatus?: number; oversize?: boolean; reject?: boolean;
-}) {
-  const requests: Array<{ url: string; method: string; headers: Headers; body: string }> = [];
+interface MockOptions {
+  admitted?: boolean;
+  jwksStatus?: number;
+  rpcStatus?: number;
+  oversized?: boolean;
+  offline?: "jwks" | "rpc";
+  badRpcJson?: boolean;
+}
+function fakeNetwork(jwks: unknown, options: MockOptions = {}) {
+  const calls: Array<{ url: string; method: string; body: string }> = [];
   const fetchImpl: typeof fetch = async (input, init) => {
-    const url = String(input), headers = new Headers(init?.headers);
-    requests.push({ url, method: init?.method || "GET", headers, body: String(init?.body || "") });
-    if (options?.reject) throw new Error("Simulated upstream outage");
-    check(init?.redirect === "error", "redirects must be disabled");
-    check(init?.signal !== undefined, "requests must have an explicit timeout");
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    const headers = new Headers(init?.headers);
+    const body = String(init?.body ?? "");
+    calls.push({ url, method, body });
+    assert(init?.redirect === "error", "redirects must be forbidden");
+    assert(init?.cache === "no-store", "cache must be disabled");
+    assert(init?.signal, "bounded timeout required");
     if (url === REVIEW_ORIGIN + "/auth/v1/.well-known/jwks.json") {
-      check(init?.method === "GET", "JWKS must use GET");
-      check(!headers.has("authorization") && !headers.has("apikey"), "secrets sent to JWKS!");
-      if (options?.oversize) {
+      assert(method === "GET", "JWKS must use GET");
+      assert(!headers.has("apikey") && !headers.has("authorization"),
+        "server secret leaked to public JWKS");
+      if (options.offline === "jwks") throw new Error("Offline JWKS");
+      if (options.oversized)
         return new Response("x".repeat(16_385), {
           headers: { "content-type": "application/json" },
         });
-      }
-      return Response.json(jwks, { status: options?.jwksStatus ?? 200 });
+      return Response.json(jwks, { status: options.jwksStatus ?? 200 });
     }
-    if (url === REVIEW_ORIGIN + "/rest/v1/rpc/ocn_owner_oauth_session_active") {
-      check(init?.method === "POST", "consent RPC must use POST");
-      check(headers.get("apikey") === fakeServiceKey &&
-        headers.get("authorization") === "Bearer " + fakeServiceKey, "missing server-only credential");
-      const p = JSON.parse(String(init?.body));
-      check(p.p_owner === owner && p.p_client === client && p.p_session === session,
-        "wrong owner/client/session passed to RPC");
-      return Response.json(options?.consent !== false);
+    if (url === REVIEW_ORIGIN +
+      "/rest/v1/rpc/ocn_owner_oauth_resource_session_active") {
+      assert(method === "POST", "server RPC requires POST");
+      assert(headers.get("apikey") === fakeKey &&
+        headers.get("authorization") === "Bearer " + fakeKey,
+        "missing server-only RPC credential");
+      assert(headers.get("content-type") === "application/json",
+        "RPC must send JSON");
+      const args = JSON.parse(body);
+      assert(Object.keys(args).sort().join() ===
+        ["p_client", "p_owner", "p_resource", "p_session"].join(),
+        "unexpected RPC parameters");
+      assert(args.p_owner === owner && args.p_client === client &&
+        args.p_session === session && args.p_resource === REVIEW_RESOURCE,
+        "incorrect owner/client/session/resource sent to RPC");
+      if (options.offline === "rpc") throw new Error("Offline RPC");
+      if (options.badRpcJson)
+        return Response.json({ authorized: true });
+      return Response.json(options.admitted !== false, { status: options.rpcStatus ?? 200 });
     }
-    throw new Error("Unexpected outbound endpoint: " + url);
+    throw new Error("Unexpected outbound request: " + url);
   };
-  return { requests, fetchImpl };
+  return { fetchImpl, calls };
 }
-function adapter(fetchImpl: typeof fetch, binding: (resource: string) => Promise<boolean>) {
+function verifier(fetchImpl: typeof fetch, serviceKey = fakeKey) {
   return createReviewServerVerifier({
-    expectedOwner: owner, expectedClient: client, serviceRoleKey: fakeServiceKey,
-    resourceBindingActive: binding,
-    fetchImpl,
+    expectedOwner: owner, expectedClient: client, serviceRoleKey: serviceKey, fetchImpl,
   });
 }
 
-Deno.test("trusted fixed JWKS + real ES256 + bound session RPC verify, without device calls", async () => {
+Deno.test("real ES256 plus fixed JWKS and atomic four-field RPC verifies an Edge session", async () => {
   const fixture = await signedFixture();
-  const mock = stubFetch(fixture.jwks);
-  let bindingCalls = 0;
-  const verifier = adapter(mock.fetchImpl, async resource => {
-    bindingCalls++;
-    return resource === REVIEW_RESOURCE;
-  });
-  check(await authorizeOwnerRequest("Bearer " + fixture.token, verifier, now), "valid signed owner denied");
-  check(bindingCalls === 1, "new resource binding not checked");
-  check(mock.requests.length === 2, "expected only JWKS and session read");
+  const network = fakeNetwork(fixture.jwks);
+  assert(await authorizeOwnerRequest("Bearer " + fixture.token,
+    verifier(network.fetchImpl), now), "signed resource-bound session wrongly rejected");
+  assert(network.calls.length === 2, "expected exactly JWKS and atomic authorization RPC");
 });
 
-Deno.test("old Render binding or revoked consent prevents authorization", async () => {
+Deno.test("server rejects disabled binding / revoked consent / absent session via false RPC", async () => {
   const fixture = await signedFixture();
-  const refused = stubFetch(fixture.jwks);
-  const falseBinding = adapter(refused.fetchImpl, async () => false);
-  check(!await authorizeOwnerRequest("Bearer " + fixture.token, falseBinding, now),
-    "old-only binding accepted");
-  check(refused.requests.length === 1, "consent RPC called despite absent new-resource binding");
-  const revoked = stubFetch(fixture.jwks, { consent: false });
-  const verified = adapter(revoked.fetchImpl, async resource => resource === REVIEW_RESOURCE);
-  check(!await authorizeOwnerRequest("Bearer " + fixture.token, verified, now),
-    "revoked consent accepted");
-  check(revoked.requests.length === 2, "revocation RPC missing");
+  const network = fakeNetwork(fixture.jwks, { admitted: false });
+  assert(!await authorizeOwnerRequest("Bearer " + fixture.token,
+    verifier(network.fetchImpl), now), "false RPC was accepted");
+  assert(network.calls.length === 2, "missing atomic resource/consent RPC");
 });
 
-Deno.test("bad JWKS, unsupported response, oversize and upstream failure fail closed", async () => {
+Deno.test("untrusted JWKS, HTTP failure, oversize and offline JWKS fail closed", async () => {
   const fixture = await signedFixture();
-  for (const [label, opts, jwks] of [
-    ["wrong JWKS", {}, { keys: [] }],
-    ["HTTP 500", { jwksStatus: 500 }, fixture.jwks],
-    ["oversize response", { oversize: true }, fixture.jwks],
-    ["offline JWKS", { reject: true }, fixture.jwks],
-  ] as Array<[string, Parameters<typeof stubFetch>[1], unknown]>) {
-    const mock = stubFetch(jwks, opts);
-    let bindingCalled = false;
-    const verifier = adapter(mock.fetchImpl, async () => { bindingCalled = true; return true; });
-    check(!await authorizeOwnerRequest("Bearer " + fixture.token, verifier, now),
-      "fail open: " + label);
-    check(!bindingCalled && mock.requests.length === 1, "consent reached after JWKS failure: " + label);
+  const matrix: Array<[string, unknown, MockOptions]> = [
+    ["no signing key", { keys: [] }, {}],
+    ["HTTP failure", fixture.jwks, { jwksStatus: 500 }],
+    ["oversized stream", fixture.jwks, { oversized: true }],
+    ["upstream network error", fixture.jwks, { offline: "jwks" }],
+  ];
+  for (const [label, keys, opts] of matrix) {
+    const network = fakeNetwork(keys, opts);
+    assert(!await authorizeOwnerRequest("Bearer " + fixture.token,
+      verifier(network.fetchImpl), now), label + " failed open");
+    assert(network.calls.length === 1, label + " reached private RPC after JWKS failure");
   }
 });
 
-Deno.test("no valid server-side identity, bad audience and denied resource callback fail closed", async () => {
+Deno.test("wrong signed owner, client, audience, session and expiry fail before RPC", async () => {
+  const invalid = [
+    { ...payload, aud: "https://ocn-mcp-ping-canary.onrender.com" },
+    { ...payload, sub: "ffffffff-ffff-4fff-8fff-ffffffffffff" },
+    { ...payload, client_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+    { ...payload, session_id: "not-a-uuid" },
+    { ...payload, exp: now - 120 },
+  ];
+  for (const claims of invalid) {
+    const fixture = await signedFixture(claims);
+    const network = fakeNetwork(fixture.jwks);
+    assert(!await authorizeOwnerRequest("Bearer " + fixture.token,
+      verifier(network.fetchImpl), now), "invalid identity authorized");
+    assert(network.calls.length === 1, "wrong identity reached resource/session RPC");
+  }
+});
+
+Deno.test("RPC offline, non-boolean data and HTTP error fail closed", async () => {
   const fixture = await signedFixture();
-  const mock = stubFetch(fixture.jwks);
-  for (const bad of [
-    { ...claims, aud: "https://ocn-mcp-ping-canary.onrender.com" },
-    { ...claims, client_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" },
-    { ...claims, sub: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" },
+  for (const opts of [
+    { offline: "rpc" as const }, { badRpcJson: true }, { rpcStatus: 403 },
   ]) {
-    const badFixture = await signedFixture(bad);
-    const badMock = stubFetch(badFixture.jwks);
-    check(!await authorizeOwnerRequest("Bearer " + badFixture.token,
-      adapter(badMock.fetchImpl, async () => true), now), "invalid identity accepted");
-    check(badMock.requests.length === 1, "private RPC called after wrong identity");
+    const network = fakeNetwork(fixture.jwks, opts);
+    assert(!await authorizeOwnerRequest("Bearer " + fixture.token,
+      verifier(network.fetchImpl), now), "untrusted RPC result accepted");
+    assert(network.calls.length === 2, "RPC path was not exercised");
   }
-  const refuseBinding = adapter(mock.fetchImpl, async () => { throw new Error("binding RPC offline"); });
-  check(!await authorizeOwnerRequest("Bearer " + fixture.token, refuseBinding, now),
-    "offline binding check accepted");
 });
 
-Deno.test("review adapter rejects missing server credentials and malformed owner", () => {
-  const mock = stubFetch({ keys: [] });
-  for (const cfg of [
-    { expectedOwner: "bad-id", expectedClient: client, serviceRoleKey: fakeServiceKey },
+Deno.test("bad server owner/client or missing service key are refused", () => {
+  const network = fakeNetwork({ keys: [] });
+  for (const config of [
+    { expectedOwner: "bad-id", expectedClient: client, serviceRoleKey: fakeKey },
+    { expectedOwner: owner, expectedClient: "bad-id", serviceRoleKey: fakeKey },
     { expectedOwner: owner, expectedClient: client, serviceRoleKey: "" },
   ]) {
-    let rejected = false;
+    let failed = false;
     try {
-      createReviewServerVerifier({
-        ...cfg, resourceBindingActive: async () => true, fetchImpl: mock.fetchImpl,
-      });
+      createReviewServerVerifier({ ...config, fetchImpl: network.fetchImpl });
     } catch {
-      rejected = true;
+      failed = true;
     }
-    check(rejected, "missing owner binding or service key accepted");
+    assert(failed, "bad review server configuration unexpectedly accepted");
   }
 });
