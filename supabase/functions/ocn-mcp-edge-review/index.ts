@@ -102,7 +102,8 @@ export async function verifyEs256Jwt(
 function boundToSingleReviewResource(aud: OwnerClaims["aud"]): boolean {
   if (typeof aud === "string") return aud === RESOURCE;
   if (!Array.isArray(aud) || aud.length !== 2) return false;
-  return aud[0] === "authenticated" && aud[1] === RESOURCE;
+  // JWT audience array ordering has no authorization meaning (RFC 7519).
+  return aud.includes("authenticated") && aud.includes(RESOURCE);
 }
 
 export async function authorizeOwnerRequest(
