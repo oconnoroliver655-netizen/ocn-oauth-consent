@@ -197,8 +197,15 @@ export function createIsolatedReviewFetcher(verifier: OwnerVerifier) {
 async function dispatchReviewRequest(
   request: Request, middleware: ReturnType<typeof createReviewMiddleware>,
 ): Promise<Response> {
-  // Prevent forged public origin/issuer metadata in the review function.
-  if (new URL(request.url).origin !== ORIGIN) {
+  // The OAuth middleware matches any suffix /oauth-protected-resource at
+  // arbitrary depth. Before dispatch, allow only THIS exact MCP resource,
+  // its official metadata endpoint and its harmless health check; never
+  // publish metadata on unrelated paths or on a forged origin.
+  const url = new URL(request.url);
+  if (url.origin !== ORIGIN ||
+      (url.pathname !== FUNCTION_PATH &&
+       url.pathname !== FUNCTION_PATH + "/healthz" &&
+       url.pathname !== FUNCTION_PATH + "/oauth-protected-resource")) {
     return new Response("Not found", { status: 404 });
   }
   return middleware(request);
