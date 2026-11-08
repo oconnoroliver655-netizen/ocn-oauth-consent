@@ -1,5 +1,5 @@
 // Isolated, fake verifier/consent only. No secrets, live JWT, Windows or SQL.
-import { fetchReview, authorizeOwnerRequest, type OwnerClaims, type OwnerVerifier } from "./index.ts";
+import { fetchReview, authorizeOwnerRequest, verifyEs256Jwt, type OwnerClaims, type OwnerVerifier } from "./index.ts";
 
 function check(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -110,4 +110,78 @@ Deno.test("strict verified claims require exact issuer/resource/owner/client and
   }
   check(!await authorizeOwnerRequest("Bearer signed-stub", verifier(claims, false), time),
     "revoked/absent consent allowed");
+});
+
+
+// Real WebCrypto P-256 signing fixtures. Keys are generated ephemerally
+// inside this isolated test; no project key, bearer or private secret is used.
+const base64url = (bytes: Uint8Array): string =>
+  btoa(Array.from(bytes, b => String.fromCharCode(b)).join(""))
+    .replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/g, "");
+const segment = (value: object) => base64url(new TextEncoder().encode(JSON.stringify(value)));
+async function keyFixture() {
+  const pair = await crypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const jwk = await crypto.subtle.exportKey("jwk", pair.publicKey);
+  return { privateKey: pair.privateKey, jwks: { keys: [{ ...jwk, kid: "test-key" }] } };
+}
+async function signedJwt(
+  privateKey: CryptoKey, payload: object, header: object = { alg: "ES256", kid: "test-key" }
+) {
+  const message = segment(header) + "." + segment(payload);
+  const signature = new Uint8Array(await crypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" }, privateKey, new TextEncoder().encode(message)));
+  return message + "." + base64url(signature);
+}
+
+Deno.test("real ES256 signature verifies against trusted JWKS and exact owner binding", async () => {
+  const { privateKey, jwks } = await keyFixture();
+  const token = await signedJwt(privateKey, claims);
+  const verified = await verifyEs256Jwt(token, jwks);
+  check(verified?.aud === resource && verified?.client_id === client, "signed claims not verified");
+  const signedVerifier: OwnerVerifier = {
+    expectedOwner: owner, expectedClient: client,
+    verifyBearer: jwt => verifyEs256Jwt(jwt, jwks),
+    sessionActive: async (who, sid, app) => who === owner && sid === session && app === client,
+  };
+  check(await authorizeOwnerRequest("Bearer " + token, signedVerifier, time),
+    "cryptographically signed, consented token should pass review contract");
+  const noConsent = { ...signedVerifier, sessionActive: async () => false };
+  check(!await authorizeOwnerRequest("Bearer " + token, noConsent, time),
+    "signature must not bypass server-side revocation");
+});
+
+Deno.test("real ES256 rejects tampering, wrong key/kid, wrong algorithm and supplied key", async () => {
+  const { privateKey, jwks } = await keyFixture();
+  const original = await signedJwt(privateKey, claims);
+  const parts = original.split(".");
+  const tampered = parts[0] + "." + segment({ ...claims, aud: "https://evil.invalid" }) +
+    "." + parts[2];
+  check(await verifyEs256Jwt(tampered, jwks) === null, "payload tampering accepted");
+  const { jwks: unrelated } = await keyFixture();
+  check(await verifyEs256Jwt(original, unrelated) === null, "wrong signing key accepted");
+  const changedKid = await signedJwt(privateKey, claims, { alg: "ES256", kid: "unknown-key" });
+  check(await verifyEs256Jwt(changedKid, jwks) === null, "unknown key identifier accepted");
+  const unsupported = await signedJwt(privateKey, claims, { alg: "HS256", kid: "test-key" });
+  check(await verifyEs256Jwt(unsupported, jwks) === null, "algorithm confusion accepted");
+  const injected = await signedJwt(privateKey, claims, {
+    alg: "ES256", kid: "test-key", jwk: jwks.keys[0],
+  });
+  check(await verifyEs256Jwt(injected, jwks) === null, "token-provided JWK accepted");
+  check(await verifyEs256Jwt(original, { keys: [jwks.keys[0], jwks.keys[0]] }) === null,
+    "ambiguous JWKS key id accepted");
+  check(await verifyEs256Jwt(parts[0] + "." + parts[1] + ".", jwks) === null,
+    "missing signature accepted");
+  check(await verifyEs256Jwt(original + ".extra", jwks) === null,
+    "excess JWT segments accepted");
+  const oldAudience = await signedJwt(privateKey, {
+    ...claims, aud: "https://ocn-mcp-ping-canary.onrender.com",
+  });
+  const signedVerifier: OwnerVerifier = {
+    expectedOwner: owner, expectedClient: client,
+    verifyBearer: jwt => verifyEs256Jwt(jwt, jwks),
+    sessionActive: async () => true,
+  };
+  check(!await authorizeOwnerRequest("Bearer " + oldAudience, signedVerifier, time),
+    "validly signed OLD Render audience must not authorize Edge resource");
 });
