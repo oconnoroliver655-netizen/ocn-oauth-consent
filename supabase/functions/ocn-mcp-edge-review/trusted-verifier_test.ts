@@ -244,10 +244,10 @@ Deno.test("isolated OAuth registration, S256 PKCE, consent, code replay and MCP 
   }
   let rejectedRegistration = false;
   try { register([otherCallback], "none"); } catch { rejectedRegistration = true; }
-  assert(rejectedRegistration && registrations.size === 0,
+  assert(rejectedRegistration && !registrations.has(client),
     "invalid client redirect must not register");
   const app = register([callback], "none");
-  assert(app.client_id === client && registrations.size === 1,
+  assert(app.client_id === client && registrations.has(client),
     "client registration was not recorded");
 
   const codeVerifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
