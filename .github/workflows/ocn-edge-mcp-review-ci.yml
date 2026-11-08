@@ -42,14 +42,12 @@ jobs:
       - name: Isolated no-secrets MCP, OAuth and ES256 tests
         run: env -i PATH="$PATH" HOME="$HOME" NODE_ENV=test CI=true deno test --frozen --lock=supabase/functions/ocn-mcp-edge-review/deno.lock --cached-only --allow-env supabase/functions/ocn-mcp-edge-review/index_test.ts supabase/functions/ocn-mcp-edge-review/trusted-verifier_test.ts
 
-  # An explicitly one-shot GoTrue source-level integration job.
-  # Public GitHub-hosted runner + disposable Postgres; no Supabase project,
-  # owner token, secret, OAuth client, service_role or Windows execution.
-  # Runs only on the commit carrying the CI review marker below.
-  upstream-native-rfc8707:
-    if: "${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(review): upstream Go OAuth resource') }}"
+  # One-shot real GoTrue current-master integration; no production access.
+  # Only this exact commit message runs this job.
+  upstream-master-resource-merge-audit:
+    if: "${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'ci(review): upstream GoTrue master merge audit') }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 18
+    timeout-minutes: 20
     permissions:
       contents: read
     services:
@@ -67,42 +65,60 @@ jobs:
           --health-timeout 3s
           --health-retries 15
     steps:
-      - name: Checkout exact public upstream RFC 8707 candidate with no persisted credentials
+      - name: Checkout immutable upstream PR candidate source
         uses: actions/checkout@v4
         with:
           repository: melcheikh/auth
           ref: e26fc1e25cb4411a23a8b0832ecfe1a6b2067e39
+          fetch-depth: 0
           persist-credentials: false
-      - name: Verify immutable upstream source and migration collision preflight
+      - name: Merge immutable current upstream master; require existing migration collision
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "e26fc1e25cb4411a23a8b0832ecfe1a6b2067e39"
+          git fetch --no-tags https://github.com/supabase/auth.git 35307ce6c1ca59016fd820f1d77d9b6201dc2e15
+          test "$(git rev-parse FETCH_HEAD)" = "35307ce6c1ca59016fd820f1d77d9b6201dc2e15"
+          git -c user.name='OCN Isolated CI Review' -c user.email='review@example.invalid' merge --no-commit --no-ff FETCH_HEAD
           test -f internal/api/oauthserver/resource_indicator_test.go
           test -f migrations/20261030120000_add_resource_to_sessions.up.sql
-          count="$(find migrations -maxdepth 1 -name '20261030120000_*.up.sql' | wc -l)"
-          if [ "$count" -ne 1 ]; then
-            echo "OCN_UPSTREAM_MIGRATION_COLLISION_BLOCKED: expected one unique version, found $count"
-            exit 2
-          fi
-          echo "OCN_UPSTREAM_SOURCE_PIN_AND_MIGRATION_UNIQUE_PASS"
-      - name: Install upstream declared Go toolchain
+          test -f migrations/20261030120000_add_dedicated_scope_to_saml_providers.up.sql
+          count="$(find migrations -maxdepth 1 -name '20261030120000_*.up.sql' | wc -l | tr -d ' ')"
+          test "$count" -eq 2
+          echo 'OCN_MERGED_UPSTREAM_MIGRATION_VERSION_COLLISION_REPRODUCED'
+          git status --short | head -n 35
+      - name: Renumber PR migration only in ephemeral GitHub runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          old=migrations/20261030120000_add_resource_to_sessions.up.sql
+          new=migrations/20261108180500_add_resource_to_sessions.up.sql
+          test -f "$old" && test ! -e "$new"
+          grep -q 'auth_migration: 20261030120000' "$old"
+          mv "$old" "$new"
+          sed -i 's/auth_migration: 20261030120000/auth_migration: 20261108180500/g' "$new"
+          test "$(find migrations -maxdepth 1 -name '20261030120000_*.up.sql' | wc -l)" -eq 1
+          test "$(find migrations -maxdepth 1 -name '20261108180500_*.up.sql' | wc -l)" -eq 1
+          grep -q 'auth_migration: 20261108180500' "$new"
+          echo 'OCN_EPHEMERAL_MIGRATION_COLLISION_RESOLVED_NOT_UPSTREAM_PATCH'
+      - name: Install merged GoTrue declared Go toolchain
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: false
-      - name: Initialize only the disposable PostgreSQL service
+      - name: Initialize and migrate disposable PostgreSQL 15
         shell: bash
         run: |
           set -euo pipefail
           go version
           psql -v ON_ERROR_STOP=1 -f hack/init_postgres.sql "postgresql://postgres:root@localhost:5432/postgres"
           make migrate_dev
-          psql -v ON_ERROR_STOP=1 -At "postgresql://postgres:root@localhost:5432/postgres" \
-            -c "SELECT CASE WHEN EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='auth' AND table_name='sessions' AND column_name='resource') THEN 'OCN_UPSTREAM_SESSIONS_RESOURCE_MIGRATION_PASS' ELSE 'MISSING_SESSIONS_RESOURCE' END"
-      - name: Execute actual upstream OAuth code-grant and refresh HTTP handler tests
+          found="$(psql -v ON_ERROR_STOP=1 -At "postgresql://postgres:root@localhost:5432/postgres" -c "SELECT count(*) FROM information_schema.columns WHERE table_schema='auth' AND table_name='sessions' AND column_name='resource'")"
+          test "$found" = 1
+          echo 'OCN_MERGED_UPSTREAM_RESOURCE_SESSION_MIGRATED_PASS'
+      - name: Execute real merged Go OAuth resource, code grant and refresh tests
         shell: bash
         run: |
           set -euo pipefail
           go test -count=1 -p 1 -v -run '^(TestOAuthClientHandler|TestOAuthAuthorize)$/Test(ResourceIndicator_|Authorize_)' ./internal/api/oauthserver
-          echo "OCN_UPSTREAM_NATIVE_OAUTH_RESOURCE_TEST_PASS"
+          echo 'OCN_MERGED_UPSTREAM_NATIVE_OAUTH_RESOURCE_PASS'
