@@ -100,39 +100,48 @@ CREATE TABLE ocn_private.oauth_resource_bindings_v2 (
 CREATE UNIQUE INDEX oauth_review_one_enabled_resource_per_client
   ON ocn_private.oauth_resource_bindings_v2(client_id) WHERE enabled;
 
--- Proposed future RPC, in review CI ONLY. Definer needs access to auth tables.
--- Name is intentionally different from existing production RPC.
--- Service-role-only grant is mandatory: no PUBLIC/anon/authenticated execution.
-CREATE FUNCTION public.ocn_owner_oauth_resource_session_active(
+-- REVIEW-ONLY two-layer least-privilege candidate. No production DDL.
+-- The database-authenticated service_role is the ONLY API caller. The
+-- privileged helper must live outside PostgREST exposed schemas; the
+-- public RPC is SECURITY INVOKER (never a public SECURITY DEFINER).
+-- The private helper retains the same atomic owner, session, client, active
+-- resource, consent scope and revocation checks. Nothing trusts raw JWT scope.
+REVOKE ALL ON SCHEMA ocn_private FROM PUBLIC, anon, authenticated;
+GRANT USAGE ON SCHEMA ocn_private TO service_role;
+
+CREATE FUNCTION ocn_private.owner_oauth_resource_session_active(
   p_owner uuid, p_session uuid, p_client uuid, p_resource text
 ) RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = ''
-AS $$
+AS $private_resource$
 SELECT EXISTS (
   SELECT 1
   FROM auth.sessions s
   JOIN auth.oauth_consents c
-    ON c.user_id = s.user_id AND c.client_id = s.oauth_client_id
-  JOIN auth.oauth_clients app ON app.id = c.client_id
+    ON c.user_id=s.user_id AND c.client_id=s.oauth_client_id
+  JOIN auth.oauth_clients app ON app.id=c.client_id
   JOIN ocn_private.oauth_resource_bindings_v2 b
-    ON b.client_id = c.client_id
-   AND b.resource_audience = p_resource
-   AND b.enabled IS TRUE
-  WHERE s.user_id = p_owner
-    AND s.id = p_session
-    AND s.oauth_client_id = p_client
-    AND app.deleted_at IS NULL
-    AND c.revoked_at IS NULL
-    -- OAuth access JWTs do not promise a scope claim. Enforce the specific
-    -- private-tool scopes using the trusted, server-side consent record.
+    ON b.client_id=c.client_id
+   AND b.resource_audience=p_resource AND b.enabled IS TRUE
+  WHERE s.user_id=p_owner AND s.id=p_session AND s.oauth_client_id=p_client
+    AND app.deleted_at IS NULL AND c.revoked_at IS NULL
     AND pg_catalog.regexp_split_to_array(pg_catalog.btrim(c.scopes),
-      '[[:space:]]+') @> ARRAY['openid', 'email']::text[]
+      '[[:space:]]+') @> ARRAY['openid','email']::text[]
     AND (s.not_after IS NULL OR s.not_after > now())
-    AND p_resource IS NOT NULL
-    AND length(p_resource) BETWEEN 9 AND 250
+    AND p_resource IS NOT NULL AND length(p_resource) BETWEEN 9 AND 250
 );
-$$;
-REVOKE ALL ON FUNCTION public.ocn_owner_oauth_resource_session_active(uuid,uuid,uuid,text) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.ocn_owner_oauth_resource_session_active(uuid,uuid,uuid,text) FROM anon, authenticated;
+$private_resource$;
+REVOKE ALL ON FUNCTION ocn_private.owner_oauth_resource_session_active(uuid,uuid,uuid,text) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION ocn_private.owner_oauth_resource_session_active(uuid,uuid,uuid,text) TO service_role;
+
+-- Fixed name/arguments consumed by trusted server-side Edge verifier.
+-- PostgREST exposes only this invoker wrapper, service-role only.
+CREATE FUNCTION public.ocn_owner_oauth_resource_session_active(
+  p_owner uuid, p_session uuid, p_client uuid, p_resource text
+) RETURNS boolean LANGUAGE sql STABLE SECURITY INVOKER SET search_path = ''
+AS $resource_rpc$
+  SELECT ocn_private.owner_oauth_resource_session_active(p_owner,p_session,p_client,p_resource);
+$resource_rpc$;
+REVOKE ALL ON FUNCTION public.ocn_owner_oauth_resource_session_active(uuid,uuid,uuid,text) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.ocn_owner_oauth_resource_session_active(uuid,uuid,uuid,text) TO service_role;
 
 INSERT INTO auth.oauth_clients(id) VALUES
@@ -278,6 +287,22 @@ BEGIN
     THEN RAISE EXCEPTION 'deleted Edge client accepted'; END IF;
   UPDATE auth.oauth_clients SET deleted_at=NULL WHERE id=edge_client;
 
+  -- Both function locations and all privilege grants must be scrutinized:
+  -- no SECURITY DEFINER in exposed public, no private schema access for users.
+  IF (SELECT prosecdef FROM pg_proc
+      WHERE oid='public.ocn_owner_oauth_resource_session_active(uuid,uuid,uuid,text)'::regprocedure)
+    THEN RAISE EXCEPTION 'public exposed RPC is SECURITY DEFINER'; END IF;
+  IF NOT (SELECT prosecdef FROM pg_proc
+      WHERE oid='ocn_private.owner_oauth_resource_session_active(uuid,uuid,uuid,text)'::regprocedure)
+    THEN RAISE EXCEPTION 'private helper not privilege separated'; END IF;
+  IF has_schema_privilege('anon','ocn_private','USAGE')
+    OR has_schema_privilege('authenticated','ocn_private','USAGE')
+    OR NOT has_schema_privilege('service_role','ocn_private','USAGE')
+    THEN RAISE EXCEPTION 'private schema USAGE grant incorrect'; END IF;
+  IF has_function_privilege('anon','ocn_private.owner_oauth_resource_session_active(uuid,uuid,uuid,text)','EXECUTE')
+    OR has_function_privilege('authenticated','ocn_private.owner_oauth_resource_session_active(uuid,uuid,uuid,text)','EXECUTE')
+    OR NOT has_function_privilege('service_role','ocn_private.owner_oauth_resource_session_active(uuid,uuid,uuid,text)','EXECUTE')
+    THEN RAISE EXCEPTION 'private helper EXECUTE grant incorrect'; END IF;
   IF has_function_privilege('anon','public.ocn_owner_oauth_resource_session_active(uuid,uuid,uuid,text)','EXECUTE')
     OR has_function_privilege('authenticated','public.ocn_owner_oauth_resource_session_active(uuid,uuid,uuid,text)','EXECUTE')
     OR NOT has_function_privilege('service_role','public.ocn_owner_oauth_resource_session_active(uuid,uuid,uuid,text)','EXECUTE')
@@ -416,5 +441,26 @@ BEGIN
     THEN RAISE EXCEPTION 'rollback failed to disable staged Edge resource'; END IF;
   RAISE NOTICE 'OCN_EDGE_REVIEW_TRANSACTIONAL_ROLLBACK_PASS: legacy hook digest, old Render RPC and audience, Edge denied before cutover and after rollback';
 END $rollback_verification$;
+
+-- Exercise the actual invoker route AS service_role, not only privileges
+-- inspected by postgres. The old resource must still succeed after rollback.
+SET ROLE service_role;
+DO $actual_service_role$
+BEGIN
+  IF NOT public.ocn_owner_oauth_resource_session_active(
+    'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'::uuid,
+    'dddddddd-dddd-4ddd-8ddd-dddddddddddd'::uuid,
+    'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'::uuid,
+    'https://ocn-mcp-ping-canary.onrender.com')
+    THEN RAISE EXCEPTION 'service_role cannot invoke protected private helper via public invoker'; END IF;
+  IF public.ocn_owner_oauth_resource_session_active(
+    'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'::uuid,
+    'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'::uuid,
+    'cccccccc-cccc-4ccc-8ccc-cccccccccccc'::uuid,
+    'https://ouxniljtjxnrkwakkvbv.supabase.co/functions/v1/ocn-mcp-edge-review')
+    THEN RAISE EXCEPTION 'service_role wrapper failed rollback revocation'; END IF;
+  RAISE NOTICE 'OCN_PRIVATE_RPC_ROLE_GATE_PASS: service invoker, unexposed definer, old Render allowed, Edge rollback denied';
+END $actual_service_role$;
+RESET ROLE;
 
 ROLLBACK; -- Entire fixture disappears at end. Never mutate remote Supabase.
