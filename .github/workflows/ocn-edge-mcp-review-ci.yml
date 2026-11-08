@@ -14,11 +14,29 @@ jobs:
   protocol-only:
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    services:
+      review-postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: ocn_review_contract
+          POSTGRES_PASSWORD: ci-only-nonproduction
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ocn_review_contract"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 15
     steps:
       - uses: actions/checkout@v4
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
+      - name: Disposable PostgreSQL dual-resource and revocation SQL contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cid="$(docker ps --filter ancestor=postgres:16-alpine --format '{{.ID}}' | head -n 1)"
+          test -n "$cid"
+          docker exec -i "$cid" psql -v ON_ERROR_STOP=1 -U postgres -d ocn_review_contract < supabase/functions/ocn-mcp-edge-review/tests/resource_contract.sql
       - name: Frozen dependency and TypeScript check (review-only)
         run: deno check --frozen --lock=supabase/functions/ocn-mcp-edge-review/deno.lock supabase/functions/ocn-mcp-edge-review/index_test.ts supabase/functions/ocn-mcp-edge-review/trusted-verifier_test.ts
       - name: Isolated no-secrets MCP, OAuth and ES256 tests
