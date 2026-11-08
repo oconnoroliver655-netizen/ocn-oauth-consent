@@ -266,4 +266,137 @@ BEGIN
     THEN RAISE EXCEPTION 'unsafe RPC EXECUTE grant'; END IF;
   RAISE NOTICE 'OCN_RESOURCE_CONTRACT_PASS: legacy hook/RPC preserved, v2 audience hook preview, active-client uniqueness, dual resource, owner/client/session, revocation, role grants';
 END $test$;
+-- STAGED, REVERSIBLE CUTOVER EXERCISE (disposable CI transaction ONLY).
+-- Stage v2 resources + 4-argument service-only RPC without modifying the
+-- legacy JWT audience hook. Edge fails closed until its mapping is enabled.
+CREATE TEMP TABLE ocn_review_rollback_baseline AS
+  SELECT md5(pg_get_functiondef(
+    'ocn_private.set_ocn_access_token_audience(jsonb)'::regprocedure
+  )) AS legacy_hook_digest;
+
+UPDATE ocn_private.oauth_resource_bindings_v2
+   SET enabled=false
+ WHERE client_id='cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+
+DO $pre_cutover$
+DECLARE
+  owner_id uuid := 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  old_client uuid := 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  edge_client uuid := 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  old_session uuid := 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  edge_session uuid := 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  edge_resource text := 'https://ouxniljtjxnrkwakkvbv.supabase.co/functions/v1/ocn-mcp-edge-review';
+BEGIN
+  IF NOT public.ocn_owner_oauth_session_active(owner_id,old_session,old_client)
+    THEN RAISE EXCEPTION 'legacy RPC failed during staged rollout'; END IF;
+  IF public.ocn_owner_oauth_resource_session_active(
+    owner_id,edge_session,edge_client,edge_resource)
+    THEN RAISE EXCEPTION 'staged disabled Edge binding allowed access'; END IF;
+  IF (ocn_private.set_ocn_access_token_audience(
+    jsonb_build_object('claims',jsonb_build_object(
+      'client_id',edge_client::text,'aud','authenticated'))
+  )->'claims'->>'aud') <> 'authenticated'
+    THEN RAISE EXCEPTION 'legacy token hook changed before cutover'; END IF;
+END $pre_cutover$;
+
+SAVEPOINT ocn_review_before_cutover;
+-- Both the new audience mapping and Auth hook replacement are ONE
+-- transaction. Never do this on the live project from this test file.
+UPDATE ocn_private.oauth_resource_bindings_v2
+   SET enabled=true
+ WHERE client_id='cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+
+CREATE OR REPLACE FUNCTION ocn_private.set_ocn_access_token_audience(event jsonb)
+RETURNS jsonb LANGUAGE plpgsql SET search_path = ''
+AS $cutover_hook$
+DECLARE claims jsonb; mapped_resource text;
+BEGIN
+  claims := event -> 'claims';
+  IF claims IS NULL OR pg_catalog.jsonb_typeof(claims) <> 'object'
+    THEN RAISE EXCEPTION 'Invalid claims'; END IF;
+  SELECT resource_audience INTO mapped_resource
+    FROM ocn_private.oauth_resource_bindings_v2
+   WHERE client_id::text=claims->>'client_id' AND enabled IS TRUE;
+  IF mapped_resource IS NOT NULL THEN
+    claims := pg_catalog.jsonb_set(
+      claims,'{aud}',pg_catalog.to_jsonb(mapped_resource),true);
+  END IF;
+  RETURN pg_catalog.jsonb_build_object('claims',claims);
+END $cutover_hook$;
+
+DO $cutover_verification$
+DECLARE
+  owner_id uuid := 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  old_client uuid := 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  edge_client uuid := 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  old_session uuid := 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  edge_session uuid := 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  old_resource text := 'https://ocn-mcp-ping-canary.onrender.com';
+  edge_resource text := 'https://ouxniljtjxnrkwakkvbv.supabase.co/functions/v1/ocn-mcp-edge-review';
+BEGIN
+  IF (SELECT md5(pg_get_functiondef(
+    'ocn_private.set_ocn_access_token_audience(jsonb)'::regprocedure))
+    FROM ocn_review_rollback_baseline)=
+    (SELECT legacy_hook_digest FROM ocn_review_rollback_baseline)
+    THEN RAISE EXCEPTION 'cutover hook was not changed'; END IF;
+  IF NOT public.ocn_owner_oauth_session_active(owner_id,old_session,old_client)
+    THEN RAISE EXCEPTION 'old client failed during cutover'; END IF;
+  IF NOT public.ocn_owner_oauth_resource_session_active(
+    owner_id,edge_session,edge_client,edge_resource)
+    THEN RAISE EXCEPTION 'Edge authorization failed during simulated cutover'; END IF;
+  IF (ocn_private.set_ocn_access_token_audience(
+    jsonb_build_object('claims',jsonb_build_object('client_id',old_client::text,'aud','authenticated'))
+  )->'claims'->>'aud')<>old_resource
+    THEN RAISE EXCEPTION 'cutover broke old Render audience'; END IF;
+  IF (ocn_private.set_ocn_access_token_audience(
+    jsonb_build_object('claims',jsonb_build_object('client_id',edge_client::text,'aud','authenticated'))
+  )->'claims'->>'aud')<>edge_resource
+    THEN RAISE EXCEPTION 'cutover failed new Edge audience'; END IF;
+  IF has_function_privilege('anon','public.ocn_owner_oauth_resource_session_active(uuid,uuid,uuid,text)','EXECUTE')
+    OR has_function_privilege('authenticated','public.ocn_owner_oauth_resource_session_active(uuid,uuid,uuid,text)','EXECUTE')
+    THEN RAISE EXCEPTION 'cutover unexpectedly exposed RPC'; END IF;
+END $cutover_verification$;
+
+-- PostgreSQL transactional DDL/function replacement must restore the hook,
+-- binding flags and legacy behavior; no independent compensating update.
+ROLLBACK TO SAVEPOINT ocn_review_before_cutover;
+
+DO $rollback_verification$
+DECLARE
+  owner_id uuid := 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  old_client uuid := 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  edge_client uuid := 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  old_session uuid := 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  edge_session uuid := 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  old_resource text := 'https://ocn-mcp-ping-canary.onrender.com';
+  edge_resource text := 'https://ouxniljtjxnrkwakkvbv.supabase.co/functions/v1/ocn-mcp-edge-review';
+BEGIN
+  IF (SELECT md5(pg_get_functiondef(
+    'ocn_private.set_ocn_access_token_audience(jsonb)'::regprocedure))
+    FROM ocn_review_rollback_baseline) <>
+    (SELECT legacy_hook_digest FROM ocn_review_rollback_baseline)
+    THEN RAISE EXCEPTION 'transaction rollback failed to restore old hook'; END IF;
+  IF NOT public.ocn_owner_oauth_session_active(owner_id,old_session,old_client)
+    THEN RAISE EXCEPTION 'rollback lost old Render RPC'; END IF;
+  IF public.ocn_owner_oauth_session_active(owner_id,edge_session,edge_client)
+    THEN RAISE EXCEPTION 'rollback allowed Edge client in legacy RPC'; END IF;
+  IF public.ocn_owner_oauth_resource_session_active(
+    owner_id,edge_session,edge_client,edge_resource)
+    THEN RAISE EXCEPTION 'rollback left Edge resource enabled'; END IF;
+  IF (ocn_private.set_ocn_access_token_audience(
+    jsonb_build_object('claims',jsonb_build_object('client_id',old_client::text,'aud','authenticated'))
+  )->'claims'->>'aud')<>old_resource
+    THEN RAISE EXCEPTION 'rollback lost original Render JWT aud'; END IF;
+  IF (ocn_private.set_ocn_access_token_audience(
+    jsonb_build_object('claims',jsonb_build_object('client_id',edge_client::text,'aud','authenticated'))
+  )->'claims'->>'aud')<>'authenticated'
+    THEN RAISE EXCEPTION 'rollback retained new Edge JWT audience'; END IF;
+  IF (SELECT count(*) FROM ocn_private.oauth_resource_binding WHERE binding_id=1 AND enabled)<>1
+    THEN RAISE EXCEPTION 'rollback lost original singleton row'; END IF;
+  IF (SELECT count(*) FROM ocn_private.oauth_resource_bindings_v2
+      WHERE client_id=edge_client AND enabled)<>0
+    THEN RAISE EXCEPTION 'rollback failed to disable staged Edge resource'; END IF;
+  RAISE NOTICE 'OCN_EDGE_REVIEW_TRANSACTIONAL_ROLLBACK_PASS: legacy hook digest, old Render RPC and audience, Edge denied before cutover and after rollback';
+END $rollback_verification$;
+
 ROLLBACK; -- Entire fixture disappears at end. Never mutate remote Supabase.
